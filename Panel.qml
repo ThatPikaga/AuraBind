@@ -11,9 +11,8 @@ Window {
     height: 640
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
     color: "transparent"
-    visible: false // Starts hidden, toggled via IPC
+    visible: false 
 
-    // Theme fallbacks for Omarchy
     QtObject {
         id: theme
         property color bg: (typeof qs !== 'undefined' && qs.Commons && qs.Commons.palette && qs.Commons.palette.window) ? qs.Commons.palette.window : "#1e1e2e"
@@ -36,14 +35,15 @@ Window {
             root.visible = !root.visible
             if (root.visible) {
                 root.requestActivate()
-                readProcess.running = true // Refresh on open
+                readProcess.running = true 
             }
         }
     }
 
+    // Safely bind the command array to the reactive configPath property
     Process {
         id: readProcess
-        command: ["sh", "-c", `cat ${configPath}`]
+        command: Qt.binding(() => ["sh", "-c", "cat '" + configPath + "'"])
         stdout: StdioCollector { onStreamFinished: parseConfig(text) }
     }
 
@@ -70,6 +70,7 @@ Window {
         
         for (let line of lines) {
             line = line.trim()
+            // STRICT Omaland-style fences
             if (line === "-- >>> managed keybindings block <<<") { inBlock = true; continue }
             if (line === "-- <<< managed keybindings block >>>") { inBlock = false; continue }
             
@@ -103,16 +104,17 @@ Window {
         content += blockEnd + "\n"
         
         let b64Content = Qt.btoa(unescape(encodeURIComponent(content)))
-        let mergeScript = `
-            FILE="${configPath}"
-            TEMP="/tmp/aurabind_merge"
-            touch "$FILE"
-            awk -v start="${blockStart}" -v end="${blockEnd}" '$0==start{skip=1;next} $0==end{skip=0;next} !skip' "$FILE" > "$TEMP"
-            echo "${b64Content}" | base64 -d >> "$TEMP"
-            mv "$TEMP" "$FILE"
-        `
+        
+        // Shell script safely constructed and base64 encoded to avoid QML string escaping bugs
+        let mergeScript = `FILE='${root.configPath}'
+TEMP='/tmp/aurabind_merge'
+touch "$FILE"
+awk -v start="${blockStart}" -v end="${blockEnd}" '$0==start{skip=1;next} $0==end{skip=0;next} !skip' "$FILE" > "$TEMP"
+echo '${b64Content}' | base64 -d >> "$TEMP"
+mv "$TEMP" "$FILE"`
+        
         let b64Script = Qt.btoa(unescape(encodeURIComponent(mergeScript)))
-        writeProcess.command = ["sh", "-c", `echo "${b64Script}" | base64 -d | bash`]
+        writeProcess.command = ["sh", "-c", "echo '" + b64Script + "' | base64 -d | bash"]
         writeProcess.running = true
     }
 
@@ -197,6 +199,7 @@ Window {
         capturedKey = ""
     }
 
+    // --- UI COMPONENTS ---
     Rectangle {
         anchors.fill: parent
         color: theme.bg
@@ -214,85 +217,27 @@ Window {
                 Layout.fillWidth: true
                 Label {
                     text: "AuraBind Manager"
-                    color: theme.text
-                    font.family: theme.fontFamily
-                    font.pixelSize: 24
-                    font.bold: true
-                    Layout.fillWidth: true
+                    color: theme.text; font.family: theme.fontFamily; font.pixelSize: 24; font.bold: true; Layout.fillWidth: true
                 }
-                Button {
-                    text: "+ Add"
-                    onClicked: {
-                        addDialog.editIndex = -1
-                        capturedMod = ""; capturedKey = ""
-                        actionCombo.currentIndex = 0
-                        descField.text = ""; dispatcherField.text = "exec"; paramsField.text = ""
-                        addDialog.visible = true
-                    }
-                }
-                Button {
-                    text: "Close"
-                    onClicked: root.visible = false
-                }
+                Button { text: "+ Add"; onClicked: { addDialog.editIndex = -1; capturedMod = ""; capturedKey = ""; actionCombo.currentIndex = 0; descField.text = ""; dispatcherField.text = "exec"; paramsField.text = ""; addDialog.visible = true } }
+                Button { text: "Close"; onClicked: root.visible = false }
             }
 
-            TextField {
-                id: searchField
-                Layout.fillWidth: true
-                placeholderText: "Search bindings..."
-                color: theme.text
-                background: Rectangle { color: theme.surface; radius: 6 }
-            }
+            TextField { id: searchField; Layout.fillWidth: true; placeholderText: "Search bindings..."; color: theme.text; background: Rectangle { color: theme.surface; radius: 6 } }
 
             ListView {
-                id: bindList
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                clip: true
-                model: keybinds
-                spacing: 8
-                ScrollBar.vertical: ScrollBar {}
-
+                id: bindList; Layout.fillWidth: true; Layout.fillHeight: true; clip: true; model: keybinds; spacing: 8; ScrollBar.vertical: ScrollBar {}
                 delegate: Rectangle {
-                    width: bindList.width
-                    height: visible ? 50 : 0
-                    opacity: visible ? 1 : 0
+                    width: bindList.width; height: visible ? 50 : 0; opacity: visible ? 1 : 0; color: theme.surface; radius: 8
                     Behavior on opacity { NumberAnimation { duration: 150 } }
                     Behavior on height { NumberAnimation { duration: 150 } }
-                    color: theme.surface
-                    radius: 8
-                    
-                    property bool matches: searchField.text === "" || 
-                                           (modelData.keys + " " + modelData.desc + " " + modelData.command).toLowerCase().indexOf(searchField.text.toLowerCase()) !== -1
+                    property bool matches: searchField.text === "" || (modelData.keys + " " + modelData.desc + " " + modelData.command).toLowerCase().indexOf(searchField.text.toLowerCase()) !== -1
                     visible: matches
-
                     RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 16
-
-                        Label {
-                            text: modelData.keys
-                            color: theme.accent
-                            font.family: theme.fontFamily
-                            font.bold: true
-                            font.pixelSize: 16
-                            Layout.preferredWidth: 180
-                        }
-                        Label {
-                            text: modelData.desc
-                            color: theme.text
-                            font.family: theme.fontFamily
-                            font.weight: Font.DemiBold
-                            Layout.preferredWidth: 150
-                        }
-                        Label {
-                            text: modelData.type === "bind" ? modelData.command : "UNBIND"
-                            color: modelData.type === "bind" ? theme.text : "#f38ba8" 
-                            font.family: theme.fontFamily
-                            Layout.fillWidth: true
-                            elide: Text.ElideRight
-                        }
+                        anchors.fill: parent; anchors.margins: 12; spacing: 16
+                        Label { text: modelData.keys; color: theme.accent; font.family: theme.fontFamily; font.bold: true; font.pixelSize: 16; Layout.preferredWidth: 180 }
+                        Label { text: modelData.desc; color: theme.text; font.family: theme.fontFamily; font.weight: Font.DemiBold; Layout.preferredWidth: 150 }
+                        Label { text: modelData.type === "bind" ? modelData.command : "UNBIND"; color: modelData.type === "bind" ? theme.text : "#f38ba8"; font.family: theme.fontFamily; Layout.fillWidth: true; elide: Text.ElideRight }
                         Button { text: "Edit"; onClicked: editBinding(index) }
                         Button { text: "Delete"; onClicked: deleteBinding(index) }
                     }
@@ -302,58 +247,22 @@ Window {
     }
 
     FocusScope {
-        id: captureArea
-        visible: isCapturing
-        focus: visible
-        anchors.fill: parent
-        z: 999
-
-        Rectangle {
-            anchors.fill: parent
-            color: "black"
-            opacity: 0.7
-            MouseArea { anchors.fill: parent }
-        }
-
+        id: captureArea; visible: isCapturing; focus: visible; anchors.fill: parent; z: 999
+        Rectangle { anchors.fill: parent; color: "black"; opacity: 0.7; MouseArea { anchors.fill: parent } }
         ColumnLayout {
-            anchors.centerIn: parent
-            spacing: 24
-
-            Label {
-                text: "Press a key combination..."
-                color: "white"
-                font.pixelSize: 28
-                font.family: theme.fontFamily
-                Layout.alignment: Qt.AlignHCenter
-            }
-            Label {
-                text: capturedMod !== "" ? `${capturedMod} + ${capturedKey}` : "..."
-                color: theme.accent
-                font.pixelSize: 48
-                font.family: theme.fontFamily
-                font.bold: true
-                Layout.alignment: Qt.AlignHCenter
-            }
-            Button {
-                text: "Cancel"
-                Layout.alignment: Qt.AlignHCenter
-                onClicked: isCapturing = false
-            }
+            anchors.centerIn: parent; spacing: 24
+            Label { text: "Press a key combination..."; color: "white"; font.pixelSize: 28; font.family: theme.fontFamily; Layout.alignment: Qt.AlignHCenter }
+            Label { text: capturedMod !== "" ? `${capturedMod} + ${capturedKey}` : "..."; color: theme.accent; font.pixelSize: 48; font.family: theme.fontFamily; font.bold: true; Layout.alignment: Qt.AlignHCenter }
+            Button { text: "Cancel"; Layout.alignment: Qt.AlignHCenter; onClicked: isCapturing = false }
         }
-
         Keys.onPressed: function(event) {
             if (event.key === Qt.Key_Escape) { isCapturing = false; event.accepted = true; return }
-            if (event.key === Qt.Key_Shift || event.key === Qt.Key_Control || 
-                event.key === Qt.Key_Alt || event.key === Qt.Key_Meta || event.key === Qt.Key_AltGr) {
-                event.accepted = true; return
-            }
-
+            if (event.key === Qt.Key_Shift || event.key === Qt.Key_Control || event.key === Qt.Key_Alt || event.key === Qt.Key_Meta || event.key === Qt.Key_AltGr) { event.accepted = true; return }
             let mods = []
             if (event.modifiers & Qt.ShiftModifier) mods.push("SHIFT")
             if (event.modifiers & Qt.ControlModifier) mods.push("CTRL")
             if (event.modifiers & Qt.AltModifier) mods.push("ALT")
             if (event.modifiers & Qt.MetaModifier) mods.push("SUPER")
-
             capturedMod = mods.join(" + ")
             capturedKey = getKeyString(event.key)
             event.accepted = true
@@ -361,56 +270,18 @@ Window {
     }
 
     Rectangle {
-        id: addDialog
-        visible: false
-        anchors.centerIn: parent
-        width: 420
-        height: 520
-        color: theme.bg
-        border.color: theme.accent
-        border.width: 2
-        radius: 12
-        z: 1000
-
+        id: addDialog; visible: false; anchors.centerIn: parent; width: 420; height: 520; color: theme.bg; border.color: theme.accent; border.width: 2; radius: 12; z: 1000
         property int editIndex: -1
-
         ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 24
-            spacing: 16
-
-            Label {
-                text: addDialog.editIndex === -1 ? "Add New Binding" : "Edit Binding"
-                font.pixelSize: 20
-                font.bold: true
-                color: theme.text
-                Layout.alignment: Qt.AlignHCenter
-            }
-
+            anchors.fill: parent; anchors.margins: 24; spacing: 16
+            Label { text: addDialog.editIndex === -1 ? "Add New Binding" : "Edit Binding"; font.pixelSize: 20; font.bold: true; color: theme.text; Layout.alignment: Qt.AlignHCenter }
             Label { text: "Key Combination"; color: theme.text }
-            Button {
-                Layout.fillWidth: true
-                text: isCapturing ? "Capturing..." : ((capturedMod !== "" ? `${capturedMod} + ` : "") + capturedKey || "Click to capture...")
-                onClicked: { isCapturing = true; capturedMod = ""; capturedKey = "" }
-            }
-
+            Button { Layout.fillWidth: true; text: isCapturing ? "Capturing..." : ((capturedMod !== "" ? `${capturedMod} + ` : "") + capturedKey || "Click to capture..."); onClicked: { isCapturing = true; capturedMod = ""; capturedKey = "" } }
             Label { text: "Description"; color: theme.text }
-            TextField {
-                id: descField
-                Layout.fillWidth: true
-                placeholderText: "e.g. Open Terminal"
-                color: theme.text
-                background: Rectangle { color: theme.surface; radius: 6 }
-            }
-
+            TextField { id: descField; Layout.fillWidth: true; placeholderText: "e.g. Open Terminal"; color: theme.text; background: Rectangle { color: theme.surface; radius: 6 } }
             Label { text: "Action Type"; color: theme.text }
             ComboBox {
-                id: actionCombo
-                Layout.fillWidth: true
-                model: ["Open App", "Custom Command", "Start Plugin", "Workspace", "Kill Active", "Reload", "Unbind (Disable Default)"]
-                currentIndex: 0
-                color: theme.text
-                background: Rectangle { color: theme.surface; radius: 6 }
+                id: actionCombo; Layout.fillWidth: true; model: ["Open App", "Custom Command", "Start Plugin", "Workspace", "Kill Active", "Reload", "Unbind (Disable Default)"]; currentIndex: 0; color: theme.text; background: Rectangle { color: theme.surface; radius: 6 }
                 onCurrentIndexChanged: {
                     switch(currentIndex) {
                         case 0: dispatcherField.text = "exec"; paramsField.placeholderText = "e.g., kitty"; dispatcherField.enabled = true; paramsField.enabled = true; break;
@@ -423,30 +294,11 @@ Window {
                     }
                 }
             }
-
             Label { text: "Dispatcher"; color: theme.text }
-            TextField {
-                id: dispatcherField
-                Layout.fillWidth: true
-                color: theme.text
-                background: Rectangle { color: theme.surface; radius: 6 }
-            }
-
+            TextField { id: dispatcherField; Layout.fillWidth: true; color: theme.text; background: Rectangle { color: theme.surface; radius: 6 } }
             Label { text: "Parameters"; color: theme.text }
-            TextField {
-                id: paramsField
-                Layout.fillWidth: true
-                color: theme.text
-                background: Rectangle { color: theme.surface; radius: 6 }
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.topMargin: 16
-                Item { Layout.fillWidth: true }
-                Button { text: "Cancel"; onClicked: addDialog.visible = false }
-                Button { text: "Save"; onClicked: saveBinding() }
-            }
+            TextField { id: paramsField; Layout.fillWidth: true; color: theme.text; background: Rectangle { color: theme.surface; radius: 6 } }
+            RowLayout { Layout.fillWidth: true; Layout.topMargin: 16; Item { Layout.fillWidth: true }; Button { text: "Cancel"; onClicked: addDialog.visible = false }; Button { text: "Save"; onClicked: saveBinding() } }
         }
     }
 }
