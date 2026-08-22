@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.pikaga-aurabind",
+  "name": "AuraBind",
+  "version": "1.0.0",
+  "author": "ThatPikaga",
+  "license": "GPLv3",
+  "description": "A small overlay to create, edit, and delete Omarchy keybindings dynamically.",
+  "kinds": ["overlay","service"],
+  "entryPoints": {
+    "overlay": "Overlay.qml"
+  }
+}
