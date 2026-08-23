@@ -1,17 +1,19 @@
 .pragma library
 
-// AuraBind managed block handler.
+// AuraBind v3.0 — managed block handler.
 //
 // Renders and parses the managed block inside ~/.config/hypr/bindings.lua.
 // The block contains o.bind() and hl.unbind() calls that AuraBind owns.
 // Whatever is outside the fences is left untouched.
 //
-// The block lines are one of:
-//   o.bind("KEYS", "DESC", "COMMAND")
-//   o.bind("KEYS", "DESC", hl.dsp...())          -- Lua dispatcher as raw code
-//   hl.unbind("KEYS")
-//
-// parseBindings reads tab-separated records from read.lua's stdout.
+// Action types (stored as @aurabind action=N comment before o.bind() lines):
+//   0 = Open App    — command is the app exec string
+//   1 = Custom Cmd  — command is a shell command
+//   2 = Kill Active — command is "killactive"
+//   3 = Plugin      — command is "omarchy-shell shell toggle <plugin>"
+//   4 = Lua/Dsp     — command is a dispatcher/Lua expression
+//   5 = Web App     — command is the webapp URL
+//   6 = Unbind      — hl.unbind() line
 
 var BEGIN_FENCE = "-- >>> aurabind managed keybindings block >>>"
 var END_FENCE = "-- <<< aurabind managed keybindings block <<<"
@@ -34,19 +36,15 @@ function splitBlock(text) {
 
 // -------------------------------------------------------------------- apply
 
-// An empty body removes the block entirely.
 function applyBlock(text, body) {
   var split = splitBlock(text)
-
   if (!body) {
     if (!split.found) return String(text || "")
     var joined = split.before.replace(/\n+$/, "\n") + split.after.replace(/^\n+/, "")
     return joined.replace(/\n{3,}$/, "\n")
   }
-
   var block = renderBlock(body)
   if (split.found) return split.before + block + split.after
-
   var head = String(text || "")
   if (head.length > 0 && head[head.length - 1] !== "\n") head += "\n"
   return head + "\n" + block + "\n"
@@ -62,13 +60,76 @@ function renderBlock(body) {
   return header + body + "\n" + END_FENCE
 }
 
-// ----------------------------------------------------------------- parse managed block
+// ------------------------------------------------------------- action type helpers
+
+// Action hint comment:  -- @aurabind action=N
+var ACTION_COMMENT_RE = /^\s*--\s+@aurabind\s+action=(\d+)\s*$/
+
+function extractActionHint(line) {
+  var m = line.trim().match(ACTION_COMMENT_RE)
+  if (m) return parseInt(m[1])
+  return -1
+}
+
+function makeActionHint(actionType) {
+  return "-- @aurabind action=" + actionType
+}
+
+// ------------------------------------------------------------- detect action type from a binding
+
+// Heuristic detection for bindings without an action hint comment.
+function detectActionType(binding, installedApps) {
+  if (!binding || binding.type === "unbind") return 6
+  var cmd = (binding.command || "").toLowerCase()
+  if (cmd === "killactive") return 2
+  if (cmd.indexOf("omarchy-shell shell toggle ") === 0) return 3
+  if (cmd.indexOf("hl.dsp") >= 0 || cmd.indexOf("hl.dispatch") >= 0) return 4
+  if (cmd.indexOf("omarchy-launch-webapp") >= 0) return 5
+  if (installedApps && installedApps.length > 0) {
+    for (var i = 0; i < installedApps.length; i++) {
+      if ((installedApps[i].exec || "").toLowerCase() === cmd) return 0
+    }
+  }
+  return 1
+}
+
+// ------------------------------------------------------------- render a binding to managed-block lines
+
+function renderBindingLine(binding, actionHint) {
+  if (binding.type === "unbind") {
+    return ['hl.unbind("' + esc(binding.keys) + '")']
+  }
+  var at = actionHint !== undefined ? actionHint : (binding.actionType !== undefined ? binding.actionType : 1)
+  var cmd = renderCmd(binding, at)
+  var bindLine = 'o.bind("' + esc(binding.keys) + '", "' + esc(binding.desc) + '", "' + esc(cmd) + '")'
+  if (at >= 0) {
+    return [makeActionHint(at), bindLine]
+  }
+  return [bindLine]
+}
+
+function renderCmd(binding, actionType) {
+  switch (actionType) {
+    case 0: return binding.command || binding.arg || ""
+    case 1: return binding.command || ""
+    case 2: return "killactive"
+    case 3: return binding.command || ""
+    case 4: return binding.command || ""
+    case 5: return binding.command || ""
+    case 6: return ""
+    default: return binding.command || ""
+  }
+}
+
+function esc(s) {
+  return String(s || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+}
+
+// ------------------------------------------------------------- parse managed block
 
 // Parse a single managed-block line into a binding object.
-// Handles:
-//   o.bind("KEYS", "DESC", "PLAIN_COMMAND")
-//   o.bind("KEYS", "DESC", hl.dsp...())       -- Lua dispatcher
-//   hl.unbind("KEYS")
+// Returns null for comment/empty lines.
+// Lines like "-- @aurabind action=N" are parsed as hints by the caller.
 function parseManagedLine(line) {
   var s = line.trim()
   if (s === "" || s.startsWith("--")) return null
@@ -76,65 +137,49 @@ function parseManagedLine(line) {
   // hl.unbind("KEYS")
   var m = s.match(/^hl\.unbind\("([^"]+)"\)$/)
   if (m) {
-    return {
-      type: "unbind",
-      keys: m[1],
-      desc: "Disable Default",
-      command: "",
-      source: "custom"
-    }
+    return { type: "unbind", keys: m[1], desc: "Disable Default", command: "", source: "custom", actionType: 6 }
   }
 
-  // o.bind("KEYS", "DESC", "COMMAND_OR_DSP")
-  // The third argument can be a quoted string or a hl.dsp expression.
-  // Try the plain quoted-string form first.
+  // o.bind("KEYS", "DESC", "COMMAND")
   m = s.match(/^o\.bind\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\)$/)
   if (m) {
-    return {
-      type: "bind",
-      keys: m[1],
-      desc: m[2] || "",
-      command: m[3] || "",
-      source: "custom",
-      kind: detectStoredKind(m[3] || "")
-    }
+    return { type: "bind", keys: m[1], desc: m[2] || "", command: m[3] || "", source: "custom", kind: "exec", actionType: -1 }
   }
 
-  // Try the Lua-dispatcher form: o.bind("KEYS", "DESC", hl.dsp...())
+  // o.bind("KEYS", "DESC", hl.dsp...())
+  // No regex with variable-length lua code works here, try a relaxed match
+  // o.bind(...) with 3 arguments where the last is NOT a plain string
   m = s.match(/^o\.bind\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*(.+)\)\s*$/)
   if (m) {
-    return {
-      type: "bind",
-      keys: m[1],
-      desc: m[2] || "",
-      command: m[3] || "",
-      source: "custom",
-      kind: "lua"
-    }
+    return { type: "bind", keys: m[1], desc: m[2] || "", command: m[3] || "", source: "custom", kind: "lua", actionType: -1 }
   }
 
   return null
 }
 
-function detectStoredKind(command) {
-  if (!command) return "exec"
-  if (command.indexOf("omarchy-launch-webapp") >= 0) return "webapp"
-  if (command.indexOf("omarchy-launch-") >= 0) return "omarchy"
-  if (command.indexOf("omarchy-shell shell toggle ") >= 0) return "plugin"
-  if (command.indexOf("omarchy-menu") >= 0) return "menu"
-  if (command.indexOf("omarchy-toggle-") >= 0) return "toggle"
-  if (command.indexOf("hl.dsp") >= 0 || command.indexOf("hl.dispatch") >= 0) return "lua"
-  if (command.indexOf("uwsm-app") >= 0) return "launch"
-  if (command.indexOf("omarchy-launch-or-focus") >= 0) return "launch"
-  return "exec"
+// Parse the managed block with action hints.
+// Returns an array of binding objects, each with actionType resolved.
+function parseManagedBlock(body) {
+  var lines = String(body || "").split("\n")
+  var result = []
+  var pendingHint = -1
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i]
+    var hint = extractActionHint(line)
+    if (hint >= 0) { pendingHint = hint; continue }
+    var b = parseManagedLine(line)
+    if (b) {
+      if (b.actionType < 0 && pendingHint >= 0) b.actionType = pendingHint
+      pendingHint = -1
+      result.push(b)
+    }
+  }
+  return result
 }
 
-// ----------------------------------------------------------------- parse scanner output
+// ------------------------------------------------------------- parse scanner output
 
 function parseBindings(records) {
-  // Parse tab-separated records from read.lua
-  // Format: b  <modmask>  <key>  <description>  <kind>  <arg>
-  // Format: u  <modmask>  <key>
   var bindings = []
   var lines = String(records || "").split("\n")
   for (var i = 0; i < lines.length; i++) {
@@ -151,7 +196,7 @@ function parseBindings(records) {
         arg: parts[5] || "",
         command: buildCommand(parts[4] || "", parts[5] || ""),
         keys: modmaskToKeys(parseInt(parts[1]) || 0, parts[2]),
-        source: "default"  // will be overridden in merge
+        source: "default"
       })
     } else if (parts[0] === "u" && parts.length >= 3) {
       bindings.push({
@@ -174,8 +219,6 @@ function parseBindings(records) {
 
 function modmaskToKeys(modmask, key) {
   var parts = []
-  // Numeric modifier flags from read.lua:
-  // SHIFT=1, CTRL=4, ALT=8, SUPER=64
   if (modmask & 64) parts.push("SUPER")
   if (modmask & 8) parts.push("ALT")
   if (modmask & 4) parts.push("CTRL")
@@ -201,22 +244,13 @@ function buildCommand(kind, arg) {
 
 // -------------------------------------------------------------------- merge
 
-// Merge default bindings (from scanner) with managed user bindings.
-// User bindings with same (keys, desc) replace defaults.
-// Extra user bindings are appended.
-// Returns { merged, userBindings }
 function mergeBindings(defaults, managedLines) {
-  var userBindings = []
-  for (var i = 0; i < managedLines.length; i++) {
-    var parsed = parseManagedLine(managedLines[i])
-    if (parsed) userBindings.push(parsed)
-  }
+  var userBindings = parseManagedBlock(managedLines.join("\n"))
 
   var userByKey = {}
   for (var i2 = 0; i2 < userBindings.length; i2++) {
     var u = userBindings[i2]
     u.source = "custom"
-    // For unbinds, also track by just the keys
     if (u.type === "unbind") {
       userByKey[u.keys + "||__unbind__"] = u
     } else {
@@ -229,7 +263,6 @@ function mergeBindings(defaults, managedLines) {
   for (var j = 0; j < defaults.length; j++) {
     var b = defaults[j]
     var key2 = b.keys + "|" + b.desc
-    // Check if there's a user override for this exact keys+desc
     if (userByKey[key2]) {
       if (!seen[key2]) {
         var u2 = userByKey[key2]
@@ -239,10 +272,9 @@ function mergeBindings(defaults, managedLines) {
       }
       delete userByKey[key2]
     } else {
-      // Check if this key combo is unbound by user
       var unbindKey = b.keys + "||__unbind__"
       if (userByKey[unbindKey]) {
-        // Skip this default binding - it's been unbound
+        // Default binding is unbound, skip it
       } else if (!seen[key2]) {
         merged.push(b)
         seen[key2] = true
@@ -250,7 +282,6 @@ function mergeBindings(defaults, managedLines) {
     }
   }
 
-  // Add remaining user bindings that weren't matched
   for (var k in userByKey) {
     if (!seen[k] && k.indexOf("||__unbind__") === -1) {
       userByKey[k].source = "custom"
@@ -259,7 +290,6 @@ function mergeBindings(defaults, managedLines) {
     }
   }
 
-  // Sort: custom bindings first, then defaults
   var customs = []
   var defaults2 = []
   for (var i3 = 0; i3 < merged.length; i3++) {
@@ -275,8 +305,6 @@ function mergeBindings(defaults, managedLines) {
 
 // ---------------------------------------------------------- hasRealBindings
 
-// Returns true if the managed block text contains any real binding lines.
-// Empty lines and comment lines don't count.
 function hasRealBindings(body) {
   if (!body) return false
   var lines = String(body || "").split("\n")
@@ -286,10 +314,22 @@ function hasRealBindings(body) {
   return false
 }
 
-// ---------------------------------------------------------- autoPopulateDefaults
+// ---------------------------------------------------------- render managed body
 
-// Convert an array of default bindings (from scanner) to managed block lines.
-// Returns a string that can be inserted between the fences.
+function renderManagedBody(userBindings) {
+  var lines = []
+  for (var i = 0; i < userBindings.length; i++) {
+    var b = userBindings[i]
+    var rendered = renderBindingLine(b)
+    for (var j = 0; j < rendered.length; j++) {
+      lines.push(rendered[j])
+    }
+  }
+  return lines.join("\n")
+}
+
+// ---------------------------------------------------------- auto-populate defaults
+
 function autoPopulateLines(defaults) {
   if (!defaults || defaults.length === 0) return ""
   var lines = []
@@ -300,27 +340,32 @@ function autoPopulateLines(defaults) {
     var key = b.keys + "|" + (b.desc || "")
     if (seen[key]) continue
     seen[key] = true
-    // Build an appropriate o.bind() call based on kind
     var cmdArg = b.command || b.arg || ""
-    // Check for lua-style dispatchers that shouldn't be wrapped in quotes
     if (b.kind === "lua" || (b.command && (b.command.indexOf("hl.dsp") >= 0 || b.command.indexOf("hl.dispatch") >= 0))) {
-      lines.push('o.bind("' + escapeKeys(b.keys) + '", "' + escapeDesc(b.desc) + '", ' + cmdArg + ')')
+      lines.push('o.bind("' + esc(b.keys) + '", "' + esc(b.desc) + '", ' + cmdArg + ')')
     } else {
-      lines.push('o.bind("' + escapeKeys(b.keys) + '", "' + escapeDesc(b.desc) + '", "' + cmdArg.replace(/"/g, '\\"') + '")')
+      lines.push('o.bind("' + esc(b.keys) + '", "' + esc(b.desc) + '", "' + esc(cmdArg) + '")')
     }
   }
   return lines.join("\n")
 }
 
-function escapeKeys(keys) {
-  return String(keys || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+
+// ---------------------------------------------------------- find disabled bindings from raw file
+
+// Find all hl.unbind() lines from the raw file content (including outside the managed block).
+// Returns an array of { keys, lineText } objects.
+function findDisabledBindings(text) {
+  var result = []
+  var lines = String(text || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var m = lines[i].trim().match(/^hl\.unbind\("([^"]+)"\)$/)
+    if (m) result.push({ keys: m[1], lineText: lines[i] })
+  }
+  return result
 }
 
-function escapeDesc(desc) {
-  return String(desc || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')
-}
-
-// -------------------------------------------------------------------- desktop entries
+// ---------------------------------------------------------- desktop entries
 
 function parseDesktopEntries(text) {
   var entries = []

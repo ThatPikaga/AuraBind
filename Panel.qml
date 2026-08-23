@@ -8,10 +8,15 @@ import qs.Commons
 import qs.Ui
 import "LuaConfig.js" as LuaConfig
 
-// AuraBind v2.0 — Omarchy Hyprland keybindings manager.
-// Shows every active keybinding (default + custom), edits create managed
-// overrides in ~/.config/hypr/bindings.lua, detects conflicts, and
-// includes an on-screen app picker for the "Open App" action type.
+// AuraBind v3.0 — Omarchy Hyprland keybindings manager.
+// Shows every active keybinding, manages overrides in bindings.lua.
+// Key features:
+//   • Key combo builder (mod checkboxes + dropdown key selectors)
+//   • Action types: Open App, Custom Cmd, Kill Active, Plugin, Lua/Dsp, Web App, Unbind
+//   • App dropdown with search (all installed apps)
+//   • Plugin dropdown
+//   • Disabled Keybindings section with Re-enable buttons
+//   • Conflict detection
 
 Item {
   id: root
@@ -26,29 +31,39 @@ Item {
 
   property bool opened: false
 
+
   // ---- data
-  property var allDefaults: []           // raw from scanner (pre-merge)
-  property var mergedBindings: []        // defaults + user overrides (merged, sorted)
-  property var userBindings: []          // parsed from managed block lines
-  property var rawManagedLines: []       // the raw body lines of the managed block
+  property var allDefaults: []
+  property var mergedBindings: []
+  property var userBindings: []
+  property var rawManagedLines: []
+  property var disabledBindings: []
 
   // ---- UI state
-  property bool isCapturing: false
-  property string capturedMod: ""
-  property string capturedKey: ""
   property string errorText: ""
   property string statusText: ""
   property bool _autoPopulated: false
-  property int selectedActionIndex: 0
   property int editIndex: -1
-  property bool showAppPicker: false
   property bool showConflictDialog: false
   property var conflictBindings: []
   property var pendingNewBind: null
+  property var selectedActionIndex: 0
+
+  // ---- key combo builder state
+  property int keyComboCount: 1
+  property var keyModSuper: true
+  property var keyModAlt: false
+  property var keyModCtrl: false
+  property var keyModShift: false
+  property var keyComboKeys: []
 
   // ---- filter state
   property string searchText: ""
   property string categoryFilter: "All"
+
+  // ---- dropdown data
+  property var installedApps: []
+  property var plugins: []
 
   // ---- colors & style
   property color background: Color.menu.background
@@ -96,6 +111,29 @@ Item {
       "next workspace", "tab"]
   }
 
+  readonly property var allKeys: [
+    "A","B","C","D","E","F","G","H","I","J","K","L","M",
+    "N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
+    "0","1","2","3","4","5","6","7","8","9",
+    "F1","F2","F3","F4","F5","F6","F7","F8","F9","F10",
+    "F11","F12","F13","F14","F15","F16","F17","F18","F19","F20",
+    "F21","F22","F23","F24","F25",
+    "RETURN","ESCAPE","TAB","BACKSPACE","DELETE","SPACE",
+    "LEFT","RIGHT","UP","DOWN",
+    "COMMA","PERIOD","SLASH","MINUS","EQUAL",
+    "APOSTROPHE","SEMICOLON","BRACKETLEFT","BRACKETRIGHT","BACKSLASH","GRAVE",
+    "HOME","END","PAGEUP","PAGEDOWN","INSERT",
+    "PAUSE","SCROLLLOCK","PRINT","HELP","MENU",
+    "XF86AudioRaiseVolume","XF86AudioLowerVolume","XF86AudioMute","XF86AudioMicMute",
+    "XF86MonBrightnessUp","XF86MonBrightnessDown",
+    "XF86KbdBrightnessUp","XF86KbdBrightnessDown","XF86KbdLightOnOff",
+    "XF86TouchpadToggle","XF86TouchpadOn","XF86TouchpadOff",
+    "XF86AudioPlay","XF86AudioPause","XF86AudioNext","XF86AudioPrev","XF86AudioStop",
+    "XF86Launch1","XF86Launch2","XF86Launch3","XF86Launch4","XF86Launch5",
+    "XF86Favorites","XF86Search","XF86HomePage","XF86Mail","XF86Calculator"
+  ]
+
+
   // ------------------------------------------------------------- lifecycle
 
   function open(payloadJson) {
@@ -104,14 +142,20 @@ Item {
     root.statusText = ""
     root._autoPopulated = false
     root.editIndex = -1
-    root.isCapturing = false
-    root.showAppPicker = false
     root.showConflictDialog = false
+    root.selectedActionIndex = 0
+    root.keyComboCount = 1
+    root.keyModSuper = true
+    root.keyModAlt = false
+    root.keyModCtrl = false
+    root.keyModShift = false
+    root.keyComboKeys = []
 
     loadApps()
+    loadPlugins()
+    loadDisabledBindings()
     scanBindings()
     configFile.reload()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   function close() {
@@ -133,16 +177,89 @@ Item {
 
   function loadApps() {
     appScannerProc.running = true
+    flatpakProc.running = true
   }
 
   function onAppsScanned(text) {
-    root.installedApps = LuaConfig.parseDesktopEntries(text || "")
-    root.installedApps.sort(function(a, b) {
+    // Cache desktop apps from the first (real) scan
+    if (text) {
+      root.cachedDesktopApps = LuaConfig.parseDesktopEntries(text || "")
+    }
+    var desktopApps = root.cachedDesktopApps || []
+    var seen = {}
+    var combined = []
+    for (var i = 0; i < desktopApps.length; i++) {
+      var key = desktopApps[i].exec || desktopApps[i].name
+      if (key && !seen[key]) {
+        seen[key] = true
+        combined.push(desktopApps[i])
+      }
+    }
+    for (var j = 0; j < root.flatpakApps.length; j++) {
+      var fa = root.flatpakApps[j]
+      if (!seen[fa.exec]) {
+        seen[fa.exec] = true
+        combined.push(fa)
+      }
+    }
+    combined.sort(function(a, b) {
       return (a.name || "").localeCompare(b.name || "")
     })
+    root.installedApps = combined
   }
 
-  property var installedApps: []
+  property var cachedDesktopApps: []
+  property var flatpakApps: []
+
+  function onFlatpakScanned(text) {
+    var apps = []
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var parts = lines[i].split("\t")
+      if (parts.length >= 2) {
+        apps.push({
+          name: parts[0],
+          exec: "flatpak run " + parts[1],
+          icon: "",
+          categories: "",
+          comment: ""
+        })
+      }
+    }
+    root.flatpakApps = apps
+    root.onAppsScanned("")
+  }
+
+  // --------------------------------------------------------- load plugins
+
+  function loadPlugins() {
+    pluginScannerProc.running = true
+  }
+
+  function onPluginsScanned(text) {
+    var out = []
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim()
+      if (line === "") continue
+      var parts = line.split("|")
+      if (parts.length >= 1) {
+        out.push({
+          id: parts[0],
+          name: parts[1] || parts[0],
+          toggleCmd: "omarchy-shell shell toggle " + parts[0]
+        })
+      }
+    }
+    root.plugins = out
+  }
+
+  // --------------------------------------------------------- load disabled bindings
+
+  function loadDisabledBindings() {
+    var found = LuaConfig.findDisabledBindings(configFile.text())
+    root.disabledBindings = found
+  }
 
   // ------------------------------------------------------- scan bindings
 
@@ -156,13 +273,10 @@ Item {
 
   function onScanComplete(text) {
     var defaults = LuaConfig.parseBindings(text)
-
-    // Parse the managed block from bindings.lua
     var split = LuaConfig.splitBlock(configFile.text())
     var managedLines = split.found ? split.body.split("\n") : []
     root.rawManagedLines = managedLines
 
-    // Auto-populate if the managed block has no real bindings and defaults exist
     if (defaults.length > 0 && !LuaConfig.hasRealBindings(split.body) && !root._autoPopulated) {
       root._autoPopulated = true
       var populateBody = LuaConfig.autoPopulateLines(defaults)
@@ -172,7 +286,7 @@ Item {
           configFile.setText(newText)
           root.statusText = "Auto-populated " + defaults.length + " default bindings"
           statusClear.restart()
-          return  // Config save will trigger onLoaded -> scanBindings -> onScanComplete again
+          return
         }
       }
     }
@@ -217,15 +331,7 @@ Item {
   // ------------------------------------------------------- save config
 
   function renderManagedBody() {
-    var lines = []
-    for (var i = 0; i < root.userBindings.length; i++) {
-      var b = root.userBindings[i]
-      if (b.type === "bind")
-        lines.push('o.bind("' + b.keys.replace(/"/g, '\\"') + '", "' + b.desc.replace(/"/g, '\\"') + '", "' + b.command.replace(/"/g, '\\"') + '")')
-      else if (b.type === "unbind")
-        lines.push('hl.unbind("' + b.keys + '")')
-    }
-    return lines.join("\n")
+    return LuaConfig.renderManagedBody(root.userBindings)
   }
 
   function saveConfig() {
@@ -245,24 +351,23 @@ Item {
     root.statusText = "Saved! hyprctl reload..."
     reloadProc.running = true
     configFile.reload()
+    loadDisabledBindings()
     scanBindings()
   }
 
   function noteSaveFailed() {
     root.selfWrite = false
     root.statusText = ""
-    root.errorText = "Write failed — check permissions"
+    root.errorText = "Write failed - check permissions"
   }
 
   // ------------------------------------------------------- binding CRUD
 
   function editBinding(index) {
-    // index is from the filtered list. Find the actual binding.
     var filtered = root.getFilteredBindings()
     var bind = filtered[index]
     if (!bind) return
 
-    // Find index in mergedBindings to set editIndex on the right one
     for (var i = 0; i < root.mergedBindings.length; i++) {
       if (root.mergedBindings[i] === bind) {
         root.editIndex = i
@@ -273,69 +378,29 @@ Item {
     var bind2 = root.mergedBindings[root.editIndex]
     if (!bind2) return
 
+    // Parse key combo from "SUPER + SHIFT + A" etc.
     var arr = bind2.keys.split(" + ")
-    root.capturedKey = arr.pop()
-    root.capturedMod = arr.join(" + ")
+    root.keyComboKeys = []
+    root.keyModSuper = false; root.keyModAlt = false; root.keyModCtrl = false; root.keyModShift = false
+    for (var k = 0; k < arr.length; k++) {
+      var part = arr[k]
+      if (part === "SUPER") root.keyModSuper = true
+      else if (part === "ALT") root.keyModAlt = true
+      else if (part === "CTRL") root.keyModCtrl = true
+      else if (part === "SHIFT") root.keyModShift = true
+      else root.keyComboKeys.push(part)
+    }
+    root.keyComboCount = root.keyComboKeys.length > 0 ? root.keyComboKeys.length : 1
+    if (root.keyComboKeys.length === 0) root.keyComboKeys = [""]
+
     descField.text = bind2.desc
-    setActionFromBinding(bind2)
+    root.setActionFromBinding(bind2)
     addDialog.visible = true
   }
 
   function setActionFromBinding(bind) {
-    if (bind.type === "unbind") {
-      root.selectedActionIndex = 6
-      dispatcherField.enabled = false
-      paramsField.enabled = false
-      dispatcherField.text = ""
-      paramsField.text = ""
-      return
-    }
-    dispatcherField.enabled = true
-    paramsField.enabled = true
-    var cmd = (bind.command || "").toLowerCase()
-    var kind = bind.kind || ""
-    if (kind === "lua" || kind === "menu" || kind === "toggle" || kind === "plugin") {
-      root.selectedActionIndex = 4
-      dispatcherField.text = bind.command || ""
-      paramsField.text = ""
-    } else if (kind === "webapp") {
-      root.selectedActionIndex = 5
-      dispatcherField.text = bind.arg || ""
-      paramsField.text = ""
-    } else if (cmd.indexOf("workspace ") === 0) {
-      root.selectedActionIndex = 2
-      dispatcherField.text = bind.command.replace(/^workspace\s+/, "")
-      paramsField.text = ""
-    } else if (cmd === "killactive" || cmd === "reload") {
-      root.selectedActionIndex = 1
-      dispatcherField.text = bind.command || ""
-      paramsField.text = ""
-    } else if (kind === "omarchy" || kind === "launch" || kind === "tui" || kind === "") {
-      root.selectedActionIndex = 0
-      dispatcherField.text = bind.arg || bind.command || ""
-      paramsField.text = ""
-    } else {
-      root.selectedActionIndex = 1
-      dispatcherField.text = bind.command || ""
-      paramsField.text = ""
-    }
-  }
-
-  function updateActionFields() {
-    var isDisabled = root.selectedActionIndex === 6
-    dispatcherField.enabled = !isDisabled
-    paramsField.enabled = root.selectedActionIndex === 1
-    dispatcherLabel.visible = !isDisabled
-    dispatcherField.visible = !isDisabled
-    paramsLabel.visible = root.selectedActionIndex === 1
-    paramsField.visible = root.selectedActionIndex === 1
-    if (root.selectedActionIndex === 0) dispatcherField.placeholderText = "e.g. kitty or firefox"
-    else if (root.selectedActionIndex === 1) dispatcherField.placeholderText = "Full command"
-    else if (root.selectedActionIndex === 2) dispatcherField.placeholderText = "e.g. 1 or 2"
-    else if (root.selectedActionIndex === 3) dispatcherField.placeholderText = "e.g. omarchy.shell toggle"
-    else if (root.selectedActionIndex === 4) dispatcherField.placeholderText = "e.g. hl.dsp.window.close()"
-    else if (root.selectedActionIndex === 5) dispatcherField.placeholderText = "e.g. https://app.example.com"
-    else if (root.selectedActionIndex === 6) { dispatcherField.text = ""; paramsField.text = "" }
+    var at = LuaConfig.detectActionType(bind, root.installedApps)
+    root.selectedActionIndex = at
   }
 
   function deleteBinding(index) {
@@ -344,7 +409,6 @@ Item {
     if (!bind) return
 
     if (bind.source === "custom") {
-      // Remove from userBindings
       var newUser = []
       for (var i = 0; i < root.userBindings.length; i++) {
         var ub = root.userBindings[i]
@@ -355,7 +419,6 @@ Item {
       root.userBindings = newUser
       remergeAndSave()
     } else {
-      // Default binding → add an unbind for this key
       var found = false
       for (var j = 0; j < root.userBindings.length; j++) {
         if (root.userBindings[j].type === "unbind" && root.userBindings[j].keys === bind.keys) {
@@ -373,30 +436,43 @@ Item {
   }
 
   function remergeAndSave() {
-    // Re-parse the managed body to get current userBindings
     var split = LuaConfig.splitBlock(configFile.text())
     var managedLines = split.found ? split.body.split("\n") : []
-    var parsed = []
-    for (var i = 0; i < managedLines.length; i++) {
-      var p = LuaConfig.parseManagedLine(managedLines[i])
-      if (p) parsed.push(p)
-    }
-    root.userBindings = parsed
+    root.userBindings = LuaConfig.parseManagedBlock(managedLines.join("\n"))
     var result = LuaConfig.mergeBindings(root.allDefaults, managedLines)
     root.mergedBindings = result.merged
     saveConfig()
   }
 
+  // ------------------------------------------------------- build key combo string
+
+  function buildKeyComboString() {
+    var mods = []
+    if (root.keyModSuper) mods.push("SUPER")
+    if (root.keyModAlt) mods.push("ALT")
+    if (root.keyModCtrl) mods.push("CTRL")
+    if (root.keyModShift) mods.push("SHIFT")
+    var keys = []
+    for (var i = 0; i < root.keyComboKeys.length; i++) {
+      if (root.keyComboKeys[i] && root.keyComboKeys[i] !== "") keys.push(root.keyComboKeys[i])
+    }
+    if (keys.length === 0) return ""
+    var allParts = mods.concat(keys)
+    return allParts.join(" + ")
+  }
+
   // ------------------------------------------------------- save binding
 
   function saveBinding() {
-    var modPrefix = root.capturedMod !== "" ? root.capturedMod + " + " : ""
-    var fullKeys = modPrefix + root.capturedKey
-    if (root.capturedKey === "UNKNOWN" || fullKeys.trim() === "") return
+    var fullKeys = buildKeyComboString()
+    if (fullKeys === "") {
+      root.errorText = "Please set at least one key combination"
+      errorClear.restart()
+      return
+    }
 
     if (root.selectedActionIndex === 6) {
-      // Unbind
-      addUserBinding({ type: "unbind", keys: fullKeys, desc: descField.text || "Disabled", command: "" })
+      addUserBinding({ type: "unbind", keys: fullKeys, desc: descField.text || "Disabled", command: "", actionType: 6 })
       return
     }
 
@@ -409,33 +485,36 @@ Item {
       desc: descField.text || "Custom Binding",
       command: cmd,
       source: "custom",
-      kind: "custom"
+      kind: "custom",
+      actionType: root.selectedActionIndex
     }
     checkConflicts(fullKeys, nb)
   }
 
   function buildCommandString() {
     var idx = root.selectedActionIndex
-    if (idx < 0 || idx > 6) return null
     switch (idx) {
       case 0: // Open App
-        return dispatcherField.text.trim() || null
+        return appDropdownValue || ""
       case 1: // Custom Command
-        return (dispatcherField.text.trim() + " " + paramsField.text.trim()).trim() || null
-      case 2: // Workspace
-        return "workspace " + dispatcherField.text.trim()
-      case 3: // Plugin
         return dispatcherField.text.trim() || null
-      case 4: // Dispatcher/Lua
+      case 2: // Kill Active Window
+        return "killactive"
+      case 3: // Plugin
+        return pluginDropdownValue || ""
+      case 4: // Lua/Dispatcher
         return dispatcherField.text.trim() || null
       case 5: // Web App
-        return "omarchy-launch-webapp '" + (dispatcherField.text.trim() || "").replace(/'/g, "'\\''") + "'"
+        return dispatcherField.text.trim() || null
       case 6: // Unbind
         return null
       default:
         return dispatcherField.text.trim() || null
     }
   }
+
+  property string appDropdownValue: ""
+  property string pluginDropdownValue: ""
 
   function checkConflicts(keys, newBind) {
     root.conflictBindings = []
@@ -457,7 +536,6 @@ Item {
     root.showConflictDialog = false
     var nb = root.pendingNewBind
     root.pendingNewBind = null
-    // Remove existing binding with same keys
     var newUser = []
     for (var i = 0; i < root.userBindings.length; i++) {
       var ub = root.userBindings[i]
@@ -466,15 +544,15 @@ Item {
     }
     newUser.push(nb)
     root.userBindings = newUser
-
     var result = LuaConfig.mergeBindings(root.allDefaults, root.rawManagedLines)
     root.mergedBindings = result.merged
     root.userBindings = result.userBindings
     saveConfig()
     addDialog.visible = false
     root.editIndex = -1
-    root.capturedMod = ""
-    root.capturedKey = ""
+    root.keyComboKeys = []
+    root.keyComboCount = 1
+    root.keyModSuper = true
   }
 
   function cancelConflictOverride() {
@@ -483,7 +561,6 @@ Item {
   }
 
   function addUserBinding(nb) {
-    // Remove any existing binding with same keys
     var newUser = []
     for (var i = 0; i < root.userBindings.length; i++) {
       var ub = root.userBindings[i]
@@ -492,47 +569,39 @@ Item {
     }
     newUser.push(nb)
     root.userBindings = newUser
-
     var result = LuaConfig.mergeBindings(root.allDefaults, root.rawManagedLines)
     root.mergedBindings = result.merged
     root.userBindings = result.userBindings
     saveConfig()
     addDialog.visible = false
     root.editIndex = -1
-    root.capturedMod = ""
-    root.capturedKey = ""
+    root.keyComboKeys = []
+    root.keyComboCount = 1
+    root.keyModSuper = true
   }
 
-  // ----------------------------------------------------------- key capture
+  // ------------------------------------------------------- re-enable disabled binding
 
-  function startCapture() {
-    root.isCapturing = true
-    root.capturedMod = ""
-    root.capturedKey = ""
-    Qt.callLater(function() { captureCatcher.forceActiveFocus() })
+  function reEnableBinding(keys) {
+    // Remove just the hl.unbind() line from the userBindings and the raw file
+    var newUser = []
+    for (var i = 0; i < root.userBindings.length; i++) {
+      var ub = root.userBindings[i]
+      if (ub.type === "unbind" && ub.keys === keys) continue
+      newUser.push(ub)
+    }
+    root.userBindings = newUser
+
+    // Also remove from disabledBindings
+    var newDisabled = []
+    for (var j = 0; j < root.disabledBindings.length; j++) {
+      if (root.disabledBindings[j].keys !== keys) newDisabled.push(root.disabledBindings[j])
+    }
+    root.disabledBindings = newDisabled
+
+    saveConfig()
   }
 
-  function getKeyString(key) {
-    if (key >= Qt.Key_A && key <= Qt.Key_Z) return String.fromCharCode(key).toUpperCase()
-    if (key >= Qt.Key_0 && key <= Qt.Key_9) return String.fromCharCode(key)
-    if (key === Qt.Key_Return || key === Qt.Key_Enter) return "RETURN"
-    if (key === Qt.Key_Escape) return "ESCAPE"
-    if (key === Qt.Key_Tab) return "TAB"
-    if (key === Qt.Key_Backspace) return "BACKSPACE"
-    if (key === Qt.Key_Delete) return "DELETE"
-    if (key === Qt.Key_Space) return "SPACE"
-    if (key === Qt.Key_Left) return "LEFT"
-    if (key === Qt.Key_Right) return "RIGHT"
-    if (key === Qt.Key_Up) return "UP"
-    if (key === Qt.Key_Down) return "DOWN"
-    if (key === Qt.Key_Comma) return "COMMA"
-    if (key === Qt.Key_Period) return "PERIOD"
-    if (key === Qt.Key_Slash) return "SLASH"
-    if (key === Qt.Key_Minus) return "MINUS"
-    if (key === Qt.Key_Equal) return "EQUAL"
-    if (key >= Qt.Key_F1 && key <= Qt.Key_F35) return "F" + (key - Qt.Key_F1 + 1)
-    return "UNKNOWN"
-  }
 
   // ------------------------------------------------------------- Processes
 
@@ -546,11 +615,42 @@ Item {
 
   Process {
     id: appScannerProc
-    command: ["sh", "-c", "for d in /usr/share/applications $HOME/.local/share/applications; do ls $d/*.desktop 2>/dev/null | while read f; do cat \"$f\"; echo '---ENTRY---'; done; done"]
+    command: ["sh", "-c", "for d in /usr/share/applications $HOME/.local/share/applications /var/lib/flatpak/exports/share/applications; do ls $d/*.desktop 2>/dev/null | while read f; do cat "$f"; echo '---ENTRY---'; done; done"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         root.onAppsScanned(String(text || ""))
+      }
+    }
+  }
+
+  Process {
+    id: flatpakProc
+    command: ["sh", "-c", "flatpak list --app 2>/dev/null | awk -F'\t' '{print $2 "\t" $1}'"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.onFlatpakScanned(String(text || ""))
+      }
+    }
+  }
+
+  Process {
+    id: pluginScannerProc
+    command: ["sh", "-c", "shopt -s nullglob; for d in $HOME/.config/omarchy/plugins/*/ /usr/share/omarchy/plugins/*/; do
+      name=$(basename "$d")
+      meta="$d/manifest.json"
+      if [ -f "$meta" ]; then
+        display=$(python3 -c "import json,sys; print(json.load(open('$meta')).get('name',''))" 2>/dev/null || echo "$name")
+      else
+        display="$name"
+      fi
+      echo "$name|$display"
+    done"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.onPluginsScanned(String(text || ""))
       }
     }
   }
@@ -580,11 +680,18 @@ Item {
     onTriggered: root.statusText = ""
   }
 
+  Timer {
+    id: errorClear
+    interval: 3000
+    running: root.errorText !== ""
+    onTriggered: root.errorText = ""
+  }
+
   FileView {
     id: configFile
     path: root.configPath
     atomicWrites: true; printErrors: false; watchChanges: true
-    onLoaded: { root.scanBindings() }
+    onLoaded: { root.loadDisabledBindings(); root.scanBindings() }
     onLoadFailed: {}
     onSaved: root.noteSaved()
     onSaveFailed: root.noteSaveFailed()
@@ -599,8 +706,11 @@ Item {
     onTriggered: {
       scanBindings()
       loadApps()
+      loadPlugins()
+      loadDisabledBindings()
     }
   }
+
 
   // ------------------------------------------------------------------- UI
 
@@ -628,8 +738,8 @@ Item {
     BorderSurface {
       id: card
       anchors.centerIn: parent
-      width: Math.min(Style.space(900), window.width - Style.gapsOut * 4)
-      height: Math.min(Style.space(740), window.height - Style.gapsOut * 4)
+      width: Math.min(Style.space(960), window.width - Style.gapsOut * 4)
+      height: Math.min(Style.space(780), window.height - Style.gapsOut * 4)
       radius: Style.cornerRadius
       color: root.background
       borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
@@ -637,97 +747,13 @@ Item {
 
       MouseArea { anchors.fill: parent; onClicked: {} }
 
-      // Keyboard navigation catcher (not capturing)
-      Item {
-        id: keyCatcher
-        anchors.fill: parent
-        visible: !root.isCapturing && !root.showAppPicker && !root.showConflictDialog
-        focus: true
-        Keys.onPressed: function(event) {
-          var vim = !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
-          if (event.key === Qt.Key_Escape) { root.dismiss(); event.accepted = true }
-          else if (event.key === Qt.Key_Down || (vim && event.key === Qt.Key_J)) { bindList.incrementCurrentIndex(); event.accepted = true }
-          else if (event.key === Qt.Key_Up || (vim && event.key === Qt.Key_K)) { bindList.decrementCurrentIndex(); event.accepted = true }
-          else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            if (bindList.currentIndex >= 0 && bindList.currentIndex < bindList.count) editBinding(bindList.currentIndex)
-            event.accepted = true
-          }
-          else if (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) {
-            if (bindList.currentIndex >= 0 && bindList.currentIndex < bindList.count) deleteBinding(bindList.currentIndex)
-            event.accepted = true
-          }
-        }
-      }
-
-      // Capture overlay
-      Rectangle {
-        anchors.fill: parent
-        visible: root.isCapturing
-        color: root.background
-        z: 10
-        ColumnLayout {
-          anchors.centerIn: parent
-          spacing: Style.spacing.xl
-          Text {
-            text: "Press a key combination... (Esc to cancel)"
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.heading
-            Layout.alignment: Qt.AlignHCenter
-          }
-          Text {
-            text: root.capturedMod !== "" ? root.capturedMod + " + " + root.capturedKey : "..."
-            color: root.accent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.title
-            font.bold: true
-            Layout.alignment: Qt.AlignHCenter
-          }
-          Button {
-            text: "Cancel"
-            Layout.alignment: Qt.AlignHCenter
-            foreground: root.foreground
-            accent: root.accent
-            fontFamily: root.fontFamily
-            onClicked: { root.isCapturing = false }
-          }
-        }
-
-        Item {
-          id: captureCatcher
-          anchors.fill: parent
-          Keys.onPressed: function(event) {
-            if (event.key === Qt.Key_Escape) {
-              root.isCapturing = false
-              event.accepted = true
-              return
-            }
-            // Ignore pure modifier presses
-            if (event.key === Qt.Key_Shift || event.key === Qt.Key_Control ||
-                event.key === Qt.Key_Alt || event.key === Qt.Key_Meta ||
-                event.key === Qt.Key_AltGr) {
-              event.accepted = true
-              return
-            }
-            var mods = []
-            if (event.modifiers & Qt.ShiftModifier) mods.push("SHIFT")
-            if (event.modifiers & Qt.ControlModifier) mods.push("CTRL")
-            if (event.modifiers & Qt.AltModifier) mods.push("ALT")
-            if (event.modifiers & Qt.MetaModifier) mods.push("SUPER")
-            root.capturedMod = mods.join(" + ")
-            root.capturedKey = getKeyString(event.key)
-            event.accepted = true
-          }
-        }
-      }
-
       // ---- MAIN CONTENT LAYOUT
       ColumnLayout {
         anchors.fill: parent
-        anchors.topMargin: card.contentTopInset
-        anchors.rightMargin: card.contentRightInset
-        anchors.bottomMargin: card.contentBottomInset
-        anchors.leftMargin: card.contentLeftInset
+        anchors.topMargin: card.contentTopInset + Style.spacing.sm
+        anchors.rightMargin: card.contentRightInset + Style.spacing.md
+        anchors.bottomMargin: card.contentBottomInset + Style.spacing.sm
+        anchors.leftMargin: card.contentLeftInset + Style.spacing.md
         spacing: Style.spacing.panelGap
 
         // Header
@@ -769,7 +795,7 @@ Item {
               Text {
                 id: countText
                 anchors.centerIn: parent
-                text: root.mergedBindings.length + " total" + (root.mergedBindings.length !== 1 ? "" : "")
+                text: root.mergedBindings.length + " total"
                 color: root.mergedBindings.length > 0 ? root.accent : Qt.darker(root.foreground, 1.6)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -780,6 +806,64 @@ Item {
         }
 
         PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
+
+        // Disabled Keybindings section (if any)
+        Rectangle {
+          visible: root.disabledBindings.length > 0
+          Layout.fillWidth: true
+          Layout.preferredHeight: disabledHeader.implicitHeight + disabledList.implicitHeight + Style.spacing.md
+          color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.04)
+          radius: Style.cornerRadius
+          border.width: 1
+          border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.15)
+
+          ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: Style.spacing.sm
+            spacing: Style.spacing.xs
+
+            Text {
+              id: disabledHeader
+              text: "⚠ Disabled Keybindings (" + root.disabledBindings.length + ")"
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            Repeater {
+              id: disabledList
+              model: root.disabledBindings
+
+              Rectangle {
+                width: parent.width
+                height: 28
+                color: "transparent"
+                RowLayout {
+                  anchors.fill: parent
+                  spacing: Style.spacing.sm
+                  Text {
+                    text: modelData.keys
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    Layout.preferredWidth: Style.space(160)
+                  }
+                  Item { Layout.fillWidth: true }
+                  Button {
+                    text: "Re-enable"
+                    fontFamily: root.fontFamily
+                    foreground: root.foreground
+                    accent: root.accent
+                    implicitHeight: 22
+                    onClicked: root.reEnableBinding(modelData.keys)
+                  }
+                }
+              }
+            }
+          }
+        }
 
         // Search & filter bar
         RowLayout {
@@ -830,7 +914,6 @@ Item {
             border.width: modelData.type === "unbind" ? 1 : 0
             border.color: modelData.type === "unbind" ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.25) : "transparent"
 
-            // Highlight row background on current
             Rectangle {
               anchors.fill: parent
               visible: ListView.isCurrentItem && modelData.type !== "unbind" && modelData.source !== "custom"
@@ -931,7 +1014,7 @@ Item {
             color: "transparent"
             Text {
               anchors.centerIn: parent
-              text: root.searchText ? "No matching bindings found" : "No bindings loaded — click + Add Binding to create one"
+              text: root.searchText ? "No matching bindings found" : "No bindings loaded - click + Add Binding to create one"
               color: Qt.darker(root.foreground, 1.6)
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -952,17 +1035,19 @@ Item {
             foreground: root.foreground
             accent: root.accent
             fontFamily: root.fontFamily
-            enabled: !root.isCapturing
             onClicked: {
               root.editIndex = -1
-              root.capturedMod = ""
-              root.capturedKey = ""
+              root.keyComboKeys = []
+              root.keyComboCount = 1
+              root.keyModSuper = true
+              root.keyModAlt = false
+              root.keyModCtrl = false
+              root.keyModShift = false
               descField.text = ""
               dispatcherField.text = ""
-              paramsField.text = ""
-              paramsField.visible = false
-              paramsLabel.visible = false
               root.selectedActionIndex = 0
+              root.appDropdownValue = ""
+              root.pluginDropdownValue = ""
               addDialog.visible = true
             }
           }
@@ -990,431 +1075,10 @@ Item {
     }
   }
 
-  // ---- add/edit dialog overlay (redesigned)
+  // ---- add / edit binding dialog
   Rectangle {
     id: addDialog
-    property int editIndex: -1
     visible: false
-    anchors.fill: parent
-    color: Qt.rgba(0,0,0,0.5)
-    z: 10
-    MouseArea { anchors.fill: parent; onClicked: {} }
-
-    BorderSurface {
-      id: dialogCard
-      anchors.centerIn: parent
-      width: Math.min(Style.space(580), parent.width - Style.gapsOut * 3)
-      height: Math.min(Style.space(740), parent.height - Style.gapsOut * 3)
-      radius: Style.cornerRadius
-      color: root.background
-      borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
-      padding: Style.spacing.panelPadding
-
-      Flickable {
-        id: dialogFlickable
-        anchors.fill: parent
-        contentHeight: dialogColumn.implicitHeight
-        clip: true
-        ScrollBar.vertical: ScrollBar {}
-
-        ColumnLayout {
-          id: dialogColumn
-          width: parent.width
-          spacing: Style.spacing.md
-
-          // ---- Title bar
-          RowLayout {
-            Layout.fillWidth: true
-            spacing: Style.spacing.md
-            ColumnLayout {
-              Layout.fillWidth: true
-              spacing: 2
-              Text {
-                text: addDialog.editIndex === -1 ? "Add New Binding" : "Edit Binding"
-                font.pixelSize: Style.font.heading
-                font.bold: true
-                color: root.foreground
-              }
-              Text {
-                text: addDialog.editIndex === -1 ? "Create a keybinding for any action" : "Modify an existing keybinding"
-                font.pixelSize: Style.font.caption
-                color: Qt.darker(root.foreground, 1.6)
-              }
-            }
-            PanelActionButton {
-              iconText: "X"
-              tooltipText: "Close"
-              foreground: root.foreground
-              onClicked: {
-                addDialog.visible = false
-                addDialog.editIndex = -1
-                root.isCapturing = false
-              }
-            }
-          }
-
-          PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
-
-          // ---- Section 1: Key Combination
-          ColumnLayout {
-            Layout.fillWidth: true
-            spacing: Style.spacing.sm
-
-            Text {
-              text: "Step 1: Press Key Combination"
-              font.pixelSize: Style.font.subtitle
-              font.bold: true
-              color: root.foreground
-            }
-
-            // Key capture zone
-            Rectangle {
-              Layout.fillWidth: true
-              Layout.preferredHeight: Style.space(56)
-              radius: Style.cornerRadius
-              color: root.isCapturing ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.12)
-                     : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-              border.width: root.isCapturing ? 2 : 1
-              border.color: root.isCapturing ? root.accent
-                            : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-
-              RowLayout {
-                anchors.fill: parent
-                anchors.margins: Style.spacing.panelPadding
-                spacing: Style.spacing.md
-
-                ColumnLayout {
-                  Layout.fillWidth: true
-                  spacing: 2
-                  Text {
-                    text: root.isCapturing ? "Listening for keys..."
-                           : (root.capturedKey ? "Captured:" : "Click here, then press your key combination")
-                    font.pixelSize: Style.font.caption
-                    color: root.isCapturing ? root.accent
-                           : (root.capturedKey ? Qt.darker(root.foreground, 1.4) : Qt.darker(root.foreground, 1.6))
-                  }
-                  Text {
-                    text: root.capturedMod + " + " + root.capturedKey
-                    font.pixelSize: root.capturedKey ? Style.font.heading : Style.font.caption
-                    font.bold: root.capturedKey
-                    color: root.capturedKey ? root.accent : "transparent"
-                  }
-                }
-
-                // Status ring
-                Rectangle {
-                  width: 32; height: 32; radius: 16
-                  color: root.isCapturing ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.15)
-                         : (root.capturedKey ? Qt.rgba(0.3, 0.8, 0.3, 0.15) : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.1))
-                  Text {
-                    anchors.centerIn: parent
-                    text: root.isCapturing ? "d" : (root.capturedKey ? "v" : "+")
-                    font.pixelSize: Style.font.subtitle
-                    color: root.isCapturing ? root.urgent
-                           : (root.capturedKey ? Qt.rgba(0.3, 0.8, 0.3, 1) : root.accent)
-                  }
-                }
-              }
-
-              MouseArea {
-                onClicked: { if (!root.isCapturing) startCapture() }
-                cursorShape: Qt.PointingHandCursor
-              }
-            }
-
-            // Key badge
-            Rectangle {
-              visible: root.capturedKey !== "" && !root.isCapturing
-              height: 32
-              width: badgeRow.implicitWidth + 16
-              radius: Style.cornerRadius
-              color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.1)
-              RowLayout {
-                id: badgeRow
-                anchors.centerIn: parent
-                spacing: Style.spacing.xxs
-                Text {
-                  text: root.capturedMod
-                  color: root.accent; font.bold: true; font.pixelSize: Style.font.subtitle; font.family: root.fontFamily
-                  visible: root.capturedMod !== ""
-                }
-                Text {
-                  text: "+"
-                  color: root.accent; font.pixelSize: Style.font.subtitle; font.bold: true
-                  visible: root.capturedMod !== ""
-                }
-                Rectangle {
-                  height: 24
-                  width: keyBadge.implicitWidth + 10
-                  radius: 4
-                  color: root.accent
-                  Text {
-                    id: keyBadge
-                    anchors.centerIn: parent
-                    text: root.capturedKey
-                    color: "#fff"; font.bold: true; font.pixelSize: Style.font.subtitle; font.family: root.fontFamily
-                  }
-                }
-              }
-            }
-          }
-
-
-          PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
-
-          // ---- Section 2: Description
-          ColumnLayout {
-            Layout.fillWidth: true
-            spacing: Style.spacing.sm
-
-            Text {
-              text: "Step 2: Describe the Binding"
-              font.pixelSize: Style.font.subtitle
-              font.bold: true
-              color: root.foreground
-            }
-
-            TextField {
-              id: descField
-              Layout.fillWidth: true
-              placeholderText: "e.g. Open Terminal, Launch Browser, Close Window..."
-              foreground: root.foreground
-              accent: root.accent
-              font.family: root.fontFamily
-            }
-          }
-
-          PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
-
-          // ---- Section 3: Action Type
-          ColumnLayout {
-            Layout.fillWidth: true
-            spacing: Style.spacing.sm
-
-            Text {
-              text: "Step 3: Choose What It Does"
-              font.pixelSize: Style.font.subtitle
-              font.bold: true
-              color: root.foreground
-            }
-
-            // Action type grid
-            GridLayout {
-              Layout.fillWidth: true
-              columns: 4
-              columnSpacing: Style.spacing.xs
-              rowSpacing: Style.spacing.xs
-
-              // 0: Open App
-              Rectangle {
-                Layout.fillWidth: true; Layout.preferredHeight: Style.space(52)
-                radius: Style.cornerRadius
-                color: root.selectedActionIndex === 0 ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
-                       : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-                border.width: root.selectedActionIndex === 0 ? 1 : 0
-                border.color: root.selectedActionIndex === 0 ? root.accent : "transparent"
-                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { root.selectedActionIndex = 0; updateActionFields() } }
-                ColumnLayout {
-                  anchors.centerIn: parent; spacing: 2
-                  Text { text: "[*]"; font.pixelSize: Style.font.subtitle; Layout.alignment: Qt.AlignHCenter }
-                  Text { text: "Open App"; font.pixelSize: Style.font.caption; font.bold: true; color: root.selectedActionIndex === 0 ? root.accent : root.foreground; Layout.alignment: Qt.AlignHCenter }
-                }
-              }
-
-              // 1: Custom Command
-              Rectangle {
-                Layout.fillWidth: true; Layout.preferredHeight: Style.space(52)
-                radius: Style.cornerRadius
-                color: root.selectedActionIndex === 1 ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
-                       : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-                border.width: root.selectedActionIndex === 1 ? 1 : 0
-                border.color: root.selectedActionIndex === 1 ? root.accent : "transparent"
-                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { root.selectedActionIndex = 1; updateActionFields() } }
-                ColumnLayout {
-                  anchors.centerIn: parent; spacing: 2
-                  Text { text: "[>]"; font.pixelSize: Style.font.subtitle; Layout.alignment: Qt.AlignHCenter }
-                  Text { text: "Command"; font.pixelSize: Style.font.caption; font.bold: true; color: root.selectedActionIndex === 1 ? root.accent : root.foreground; Layout.alignment: Qt.AlignHCenter }
-                }
-              }
-
-              // 2: Workspace
-              Rectangle {
-                Layout.fillWidth: true; Layout.preferredHeight: Style.space(52)
-                radius: Style.cornerRadius
-                color: root.selectedActionIndex === 2 ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
-                       : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-                border.width: root.selectedActionIndex === 2 ? 1 : 0
-                border.color: root.selectedActionIndex === 2 ? root.accent : "transparent"
-                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { root.selectedActionIndex = 2; updateActionFields() } }
-                ColumnLayout {
-                  anchors.centerIn: parent; spacing: 2
-                  Text { text: "[~]"; font.pixelSize: Style.font.subtitle; Layout.alignment: Qt.AlignHCenter }
-                  Text { text: "Workspace"; font.pixelSize: Style.font.caption; font.bold: true; color: root.selectedActionIndex === 2 ? root.accent : root.foreground; Layout.alignment: Qt.AlignHCenter }
-                }
-              }
-
-              // 3: Plugin
-              Rectangle {
-                Layout.fillWidth: true; Layout.preferredHeight: Style.space(52)
-                radius: Style.cornerRadius
-                color: root.selectedActionIndex === 3 ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
-                       : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-                border.width: root.selectedActionIndex === 3 ? 1 : 0
-                border.color: root.selectedActionIndex === 3 ? root.accent : "transparent"
-                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { root.selectedActionIndex = 3; updateActionFields() } }
-                ColumnLayout {
-                  anchors.centerIn: parent; spacing: 2
-                  Text { text: "[P]"; font.pixelSize: Style.font.subtitle; Layout.alignment: Qt.AlignHCenter }
-                  Text { text: "Plugin"; font.pixelSize: Style.font.caption; font.bold: true; color: root.selectedActionIndex === 3 ? root.accent : root.foreground; Layout.alignment: Qt.AlignHCenter }
-                }
-              }
-
-              // 4: Lua / Dispatcher
-              Rectangle {
-                Layout.fillWidth: true; Layout.preferredHeight: Style.space(52)
-                radius: Style.cornerRadius
-                color: root.selectedActionIndex === 4 ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
-                       : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-                border.width: root.selectedActionIndex === 4 ? 1 : 0
-                border.color: root.selectedActionIndex === 4 ? root.accent : "transparent"
-                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { root.selectedActionIndex = 4; updateActionFields() } }
-                ColumnLayout {
-                  anchors.centerIn: parent; spacing: 2
-                  Text { text: "[&]"; font.pixelSize: Style.font.subtitle; Layout.alignment: Qt.AlignHCenter }
-                  Text { text: "Lua/Dsp"; font.pixelSize: Style.font.caption; font.bold: true; color: root.selectedActionIndex === 4 ? root.accent : root.foreground; Layout.alignment: Qt.AlignHCenter }
-                }
-              }
-
-              // 5: Web App
-              Rectangle {
-                Layout.fillWidth: true; Layout.preferredHeight: Style.space(52)
-                radius: Style.cornerRadius
-                color: root.selectedActionIndex === 5 ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
-                       : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-                border.width: root.selectedActionIndex === 5 ? 1 : 0
-                border.color: root.selectedActionIndex === 5 ? root.accent : "transparent"
-                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { root.selectedActionIndex = 5; updateActionFields() } }
-                ColumnLayout {
-                  anchors.centerIn: parent; spacing: 2
-                  Text { text: "[~]"; font.pixelSize: Style.font.subtitle; Layout.alignment: Qt.AlignHCenter }
-                  Text { text: "Web App"; font.pixelSize: Style.font.caption; font.bold: true; color: root.selectedActionIndex === 5 ? root.accent : root.foreground; Layout.alignment: Qt.AlignHCenter }
-                }
-              }
-
-              // 6: Unbind
-              Rectangle {
-                Layout.fillWidth: true; Layout.preferredHeight: Style.space(52)
-                radius: Style.cornerRadius
-                color: root.selectedActionIndex === 6 ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.12)
-                       : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-                border.width: root.selectedActionIndex === 6 ? 1 : 0
-                border.color: root.selectedActionIndex === 6 ? root.urgent : "transparent"
-                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { root.selectedActionIndex = 6; updateActionFields() } }
-                ColumnLayout {
-                  anchors.centerIn: parent; spacing: 2
-                  Text { text: "[X]"; font.pixelSize: Style.font.subtitle; Layout.alignment: Qt.AlignHCenter }
-                  Text { text: "Unbind"; font.pixelSize: Style.font.caption; font.bold: true; color: root.selectedActionIndex === 6 ? root.urgent : root.foreground; Layout.alignment: Qt.AlignHCenter }
-                }
-              }
-            }
-
-            Text {
-              Layout.fillWidth: true
-              text: {
-                var h = ["Launch an installed app (use Browse Apps below)",
-                         "Run any shell command or executable",
-                         "Switch to a workspace by number (e.g. 1, 2)",
-                         "Toggle an Omarchy shell plugin (e.g. omarchy.emojis)",
-                         "Execute a Hyprland dispatcher or Lua expression",
-                         "Open a web application at a specific URL",
-                         "Disable a default keybinding without replacing it"]
-                return h[root.selectedActionIndex] || ""
-              }
-              color: Qt.darker(root.foreground, 1.5)
-              font.pixelSize: Style.font.caption
-              font.family: root.fontFamily
-              wrapMode: Text.WordWrap
-              visible: root.selectedActionIndex !== 6
-            }
-          }
-
-
-          PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
-
-          // ---- Section 4: Command Details
-          ColumnLayout {
-            Layout.fillWidth: true
-            spacing: Style.spacing.sm
-
-            Text {
-              text: "Step 4: Command Details"
-              font.pixelSize: Style.font.subtitle
-              font.bold: true
-              color: root.foreground
-            }
-
-            TextField {
-              id: dispatcherField
-              Layout.fillWidth: true
-              placeholderText: "e.g. kitty or firefox"
-              foreground: root.foreground
-              accent: root.accent
-            }
-
-            TextField {
-              id: paramsField
-              Layout.fillWidth: true
-              visible: root.selectedActionIndex === 1
-              placeholderText: "e.g. --new-window"
-              foreground: root.foreground
-              accent: root.accent
-            }
-
-            Button {
-              text: "Browse Apps"
-              foreground: root.foreground
-              accent: root.accent
-              fontFamily: root.fontFamily
-              visible: root.selectedActionIndex === 0
-              onClicked: {
-                root.showAppPicker = true
-                appSearchField.text = ""
-                Qt.callLater(function() { appSearchField.forceActiveFocus() })
-              }
-            }
-          }
-
-          RowLayout {
-            Layout.fillWidth: true
-            Layout.topMargin: Style.spacing.md
-            Item { Layout.fillWidth: true }
-            Button {
-              text: "Cancel"
-              foreground: root.foreground
-              accent: root.accent
-              fontFamily: root.fontFamily
-              onClicked: {
-                addDialog.visible = false
-                addDialog.editIndex = -1
-                root.isCapturing = false
-              }
-            }
-            Button {
-              text: "Save"
-              foreground: root.foreground
-              accent: root.accent
-              fontFamily: root.fontFamily
-              onClicked: saveBinding()
-            }
-          }
-        }
-      }
-    }
-  }
-  // ---- app picker overlay
-  Rectangle {
-    id: appPicker
-    visible: root.showAppPicker
     anchors.fill: parent
     color: Qt.rgba(0,0,0,0.5)
     z: 200
@@ -1422,8 +1086,8 @@ Item {
 
     BorderSurface {
       anchors.centerIn: parent
-      width: Math.min(Style.space(480), parent.width - Style.gapsOut * 4)
-      height: Math.min(Style.space(540), parent.height - Style.gapsOut * 4)
+      width: Math.min(Style.space(520), parent.width - Style.gapsOut * 4)
+      height: Math.min(Style.space(620), parent.height - Style.gapsOut * 4)
       radius: Style.cornerRadius
       color: root.background
       borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
@@ -1433,99 +1097,418 @@ Item {
         anchors.fill: parent
         spacing: Style.spacing.panelGap
 
+        // ---- Title bar
+        RowLayout {
+          Layout.fillWidth: true
+          Text {
+            id: addDialogTitle
+            text: root.editIndex >= 0 ? "Edit Binding" : "Add New Binding"
+            font.pixelSize: Style.font.heading
+            font.bold: true
+            color: root.foreground
+            Layout.fillWidth: true
+          }
+          PanelActionButton {
+            iconText: "X"
+            tooltipText: "Close"
+            foreground: root.foreground
+            onClicked: { addDialog.visible = false; root.editIndex = -1 }
+          }
+        }
+
+        // ---- Step 1: Modifier CheckBoxes
         Text {
-          text: "Browse Applications"
-          font.pixelSize: Style.font.heading
+          text: "Step 1: Modifiers"
+          font.pixelSize: Style.font.body
           font.bold: true
           color: root.foreground
-          Layout.alignment: Qt.AlignHCenter
+        }
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.spacing.sm
+          CheckBox {
+            id: modSuper
+            text: "SUPER"
+            checked: root.keyModSuper
+            onCheckedChanged: root.keyModSuper = checked
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+          }
+          CheckBox {
+            id: modAlt
+            text: "ALT"
+            checked: root.keyModAlt
+            onCheckedChanged: root.keyModAlt = checked
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+          }
+          CheckBox {
+            id: modCtrl
+            text: "CTRL"
+            checked: root.keyModCtrl
+            onCheckedChanged: root.keyModCtrl = checked
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+          }
+          CheckBox {
+            id: modShift
+            text: "SHIFT"
+            checked: root.keyModShift
+            onCheckedChanged: root.keyModShift = checked
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+          }
         }
 
-        TextField {
-          id: appSearchField
-          Layout.fillWidth: true
-          placeholderText: "Search apps..."
+        // ---- Step 2: Key combo count SpinBox
+        Text {
+          text: "Step 2: How many key combinations?"
+          font.pixelSize: Style.font.body
+          font.bold: true
+          color: root.foreground
+        }
+        SpinBox {
+          id: comboCount
+          from: 1
+          to: 5
+          value: root.keyComboCount
+          onValueChanged: {
+            root.keyComboCount = value
+            var arr = []
+            for (var i = 0; i < value; i++) {
+              arr.push(root.keyComboKeys[i] !== undefined ? root.keyComboKeys[i] : "")
+            }
+            root.keyComboKeys = arr
+          }
           foreground: root.foreground
           accent: root.accent
+          fontFamily: root.fontFamily
         }
 
-        ListView {
-          Layout.fillWidth: true
-          Layout.fillHeight: true
-          clip: true
-          spacing: Style.spacing.xs
-          ScrollBar.vertical: ScrollBar {}
-          model: {
-            var q = (appSearchField.text || "").toLowerCase()
-            var out = []
-            for (var i = 0; i < root.installedApps.length; i++) {
-              var a = root.installedApps[i]
-              if (q === "" || (a.name.toLowerCase().indexOf(q) !== -1) || (a.exec.toLowerCase().indexOf(q) !== -1))
-                out.push(a)
-            }
-            return out
-          }
+        // ---- Step 3: Key combo selectors (Repeater)
+        Text {
+          text: "Step 3: Select keys"
+          font.pixelSize: Style.font.body
+          font.bold: true
+          color: root.foreground
+        }
+        Repeater {
+          id: keySelectorRepeater
+          model: root.keyComboCount
 
-          delegate: Rectangle {
-            width: parent.width
-            height: 42
-            color: Color.menu.selectedBackground
-            radius: Style.cornerRadius
-            MouseArea {
-              anchors.fill: parent
+          ComboBox {
+            id: keyComboBox
+            Layout.fillWidth: true
+            model: root.allKeys
+            editable: true
+            currentIndex: {
+              var currentVal = root.keyComboKeys[index] || ""
+              for (var i = 0; i < model.length; i++) {
+                if (model[i] === currentVal) return i
+              }
+              return -1
+            }
+            onCurrentTextChanged: {
+              var arr = root.keyComboKeys.slice()
+              arr[index] = currentText
+              root.keyComboKeys = arr
+            }
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+          }
+        }
+
+        // ---- Key combo preview
+        Rectangle {
+          Layout.fillWidth: true
+          Layout.preferredHeight: Style.space(36)
+          radius: Style.cornerRadius
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+          border.width: 1
+          border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.3)
+          Text {
+            id: comboPreview
+            anchors.centerIn: parent
+            text: root.buildKeyComboString() || "(no keys selected)"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+        }
+
+        // ---- Step 4: Description
+        Text {
+          text: "Step 4: Description"
+          font.pixelSize: Style.font.body
+          font.bold: true
+          color: root.foreground
+        }
+        TextField {
+          id: descField
+          Layout.fillWidth: true
+          placeholderText: "e.g. Open Browser"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+        }
+
+        // ---- Step 5: Action type grid
+        Text {
+          text: "Step 5: Action type"
+          font.pixelSize: Style.font.body
+          font.bold: true
+          color: root.foreground
+        }
+        GridLayout {
+          id: actionGrid
+          Layout.fillWidth: true
+          columns: 4
+          rowSpacing: Style.spacing.xs
+          columnSpacing: Style.spacing.xs
+
+          Repeater {
+            model: [
+              { label: "Open App", idx: 0 },
+              { label: "Command", idx: 1 },
+              { label: "Kill Win", idx: 2 },
+              { label: "Plugin", idx: 3 },
+              { label: "Lua/Dsp", idx: 4 },
+              { label: "Web App", idx: 5 },
+              { label: "Unbind", idx: 6 }
+            ]
+
+            Button {
+              id: actionTypeBtn
+              Layout.fillWidth: true
+              text: modelData.label
+              fontFamily: root.fontFamily
+              foreground: root.selectedActionIndex === modelData.idx ? root.background : root.foreground
+              accent: root.selectedActionIndex === modelData.idx ? root.accent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
               onClicked: {
-                dispatcherField.text = modelData.exec
-                root.showAppPicker = false
+                root.selectedActionIndex = modelData.idx
+                root.appDropdownValue = ""
+                root.pluginDropdownValue = ""
+                dispatcherField.text = ""
+                appSearchField.text = ""
               }
             }
-            RowLayout {
-              anchors.fill: parent
-              anchors.margins: Style.spacing.md
-              spacing: Style.spacing.sm
-              Rectangle {
-                width: 32
-                height: 32
-                radius: 4
-                color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
-                Text {
-                  anchors.centerIn: parent
-                  text: modelData.name.charAt(0).toUpperCase()
-                  color: root.accent
-                  font.family: root.fontFamily
-                  font.bold: true
-                  font.pixelSize: Style.font.subtitle
+          }
+        }
+
+        // ---- Step 6: Action-specific UI
+        Text {
+          text: "Step 6: Action details"
+          font.pixelSize: Style.font.body
+          font.bold: true
+          color: root.foreground
+        }
+
+        // Action 0: Open App - search + ListView
+        Rectangle {
+          Layout.fillWidth: true
+          Layout.preferredHeight: Math.min(Style.space(160), parent.height * 0.3)
+          visible: root.selectedActionIndex === 0
+          color: "transparent"
+
+          ColumnLayout {
+            anchors.fill: parent
+            spacing: Style.spacing.xs
+
+            TextField {
+              id: appSearchField
+              Layout.fillWidth: true
+              placeholderText: "Search installed apps..."
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+            }
+
+            ListView {
+              id: appListView
+              Layout.fillWidth: true
+              Layout.fillHeight: true
+              clip: true
+              model: {
+                var apps = root.installedApps
+                var q = appSearchField.text.toLowerCase()
+                if (q === "") return apps
+                var filtered = []
+                for (var i = 0; i < apps.length; i++) {
+                  if ((apps[i].name || "").toLowerCase().indexOf(q) >= 0 ||
+                      (apps[i].exec || "").toLowerCase().indexOf(q) >= 0) {
+                    filtered.push(apps[i])
+                  }
                 }
+                return filtered
               }
-              Column {
-                Layout.fillWidth: true
-                spacing: 2
+
+              delegate: Rectangle {
+                width: ListView.view.width
+                height: Style.space(28)
+                color: root.appDropdownValue === modelData.exec
+                  ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.2)
+                  : "transparent"
+                radius: Style.cornerRadius
+
                 Text {
-                  text: modelData.name
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.left: parent.left
+                  anchors.leftMargin: Style.spacing.sm
+                  text: modelData.name || modelData.exec
                   color: root.foreground
-                  font.family: root.fontFamily
-                  font.weight: Font.DemiBold
-                  font.pixelSize: Style.font.body
-                  elide: Text.ElideRight
-                }
-                Text {
-                  text: modelData.comment || modelData.exec
-                  color: Qt.darker(root.foreground, 1.6)
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   elide: Text.ElideRight
                 }
+                MouseArea {
+                  anchors.fill: parent
+                  onClicked: root.appDropdownValue = modelData.exec
+                }
               }
             }
+
+          // Selected app display
+          Rectangle {
+            visible: root.appDropdownValue !== ""
+            Layout.fillWidth: true
+            height: 24
+            radius: Style.cornerRadius
+            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.1)
+            Text {
+              anchors.left: parent.left
+              anchors.leftMargin: Style.spacing.sm
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Selected: " + root.appDropdownValue
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              elide: Text.ElideRight
+            }
+          }
           }
         }
 
-        Button {
-          Layout.alignment: Qt.AlignHCenter
-          text: "Cancel"
+        // Action 1, 4, 5: dispatcherField
+        TextField {
+          id: dispatcherField
+          Layout.fillWidth: true
+          visible: root.selectedActionIndex === 1 || root.selectedActionIndex === 4 || root.selectedActionIndex === 5
+          placeholderText: {
+            if (root.selectedActionIndex === 1) return "e.g. firefox"
+            if (root.selectedActionIndex === 4) return "e.g. lua script or dispatcher cmd"
+            if (root.selectedActionIndex === 5) return "e.g. https://example.com"
+            return ""
+          }
           foreground: root.foreground
-          accent: root.accent
           fontFamily: root.fontFamily
-          onClicked: root.showAppPicker = false
+        }
+
+        // Action 2: Kill Active Window - explanatory text
+        Text {
+          Layout.fillWidth: true
+          visible: root.selectedActionIndex === 2
+          text: "This action kills the currently active window."
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+
+        // Action 3: Plugin ListView
+        Rectangle {
+          Layout.fillWidth: true
+          Layout.preferredHeight: Math.min(Style.space(160), parent.height * 0.3)
+          visible: root.selectedActionIndex === 3
+          color: "transparent"
+
+          ListView {
+            id: pluginListView
+            anchors.fill: parent
+            clip: true
+            model: root.plugins
+
+            delegate: Rectangle {
+              width: ListView.view.width
+              height: Style.space(28)
+              color: root.pluginDropdownValue === modelData.toggleCmd
+                ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.2)
+                : "transparent"
+              radius: Style.cornerRadius
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.left: parent.left
+                anchors.leftMargin: Style.spacing.sm
+                text: modelData.name + (modelData.id ? " (" + modelData.id + ")" : "")
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+              MouseArea {
+                anchors.fill: parent
+                onClicked: root.pluginDropdownValue = modelData.toggleCmd
+              }
+            }
+          }
+
+        // Selected plugin display
+        Rectangle {
+          visible: root.pluginDropdownValue !== ""
+          Layout.fillWidth: true
+          height: 24
+          radius: Style.cornerRadius
+          color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.1)
+          Text {
+            anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.sm
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Selected: " + root.pluginDropdownValue
+            color: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            elide: Text.ElideRight
+          }
+        }
+        }
+
+        // Action 6: Unbind - explanatory text
+        Text {
+          Layout.fillWidth: true
+          visible: root.selectedActionIndex === 6
+          text: "This will unbind (disable) the key combination."
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+
+        // ---- Save / Cancel buttons
+        RowLayout {
+          Layout.fillWidth: true
+          Layout.topMargin: Style.spacing.md
+          Item { Layout.fillWidth: true }
+          Button {
+            text: "Cancel"
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            onClicked: { addDialog.visible = false; root.editIndex = -1 }
+          }
+          Button {
+            text: "Save"
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            onClicked: root.saveBinding()
+          }
         }
       }
     }
