@@ -113,6 +113,8 @@ local function make_stub_env(bindings)
               pairsStr[#pairsStr + 1] = tostring(k) .. " = " .. serialize(v)
             end
             return "{" .. table.concat(pairsStr, ", ") .. "}"
+          elseif type(val) == "string" then
+            return '"' .. val .. '"'
           end
           return tostring(val)
         end
