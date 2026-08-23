@@ -697,14 +697,13 @@ Item {
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.namespace: "aurabind"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Auto
+    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
 
-    Keys.onEscapePressed: root.dismiss()
-
-    // Scrim (click to dismiss)
+    // Scrim (click to dismiss) — also captures Escape
     Rectangle {
       anchors.fill: parent
       color: root.scrim
+      Keys.onEscapePressed: root.dismiss()
       MouseArea {
         anchors.fill: parent
         onClicked: root.dismiss()
@@ -1542,6 +1541,7 @@ Item {
       function open() { root.open("{}") }
       function close() { root.dismiss() }
       function toggle() { root.toggle() }
-    }
-  } // close PanelWindow
+    } // close IpcHandler
+  } // close addDialog
+} // close PanelWindow
 } // close root Item
