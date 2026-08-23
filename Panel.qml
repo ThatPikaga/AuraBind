@@ -692,13 +692,14 @@ Item {
   PanelWindow {
     id: window
     visible: root.opened
-    width: parent ? parent.width : 0
-    height: parent ? parent.height : 0
+    anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.namespace: "aurabind"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Auto
+
+    Keys.onEscapePressed: root.dismiss()
 
     // Scrim (click to dismiss)
     Rectangle {
@@ -1049,31 +1050,30 @@ Item {
         }
       }
     }
-  }
 
-  // ---- add / edit binding dialog
-  Rectangle {
-    id: addDialog
-    visible: false
-    anchors.fill: parent
-    color: Qt.rgba(0,0,0,0.5)
-    z: 200
-    MouseArea { anchors.fill: parent; onClicked: {} }
+    // ---- add / edit binding dialog
+    Rectangle {
+      id: addDialog
+      visible: false
+      anchors.fill: parent
+      color: Qt.rgba(0,0,0,0.5)
+      z: 200
+      MouseArea { anchors.fill: parent; onClicked: {} }
 
-    BorderSurface {
-      anchors.centerIn: parent
-      width: Math.min(Style.space(520), parent.width - Style.gapsOut * 4)
-      height: Math.min(Style.space(620), parent.height - Style.gapsOut * 4)
-      radius: Style.cornerRadius
-      color: root.background
-      borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
-      padding: Style.spacing.panelPadding
+      BorderSurface {
+        anchors.centerIn: parent
+        width: Math.min(Style.space(520), parent.width - Style.gapsOut * 4)
+        height: Math.min(Style.space(620), parent.height - Style.gapsOut * 4)
+        radius: Style.cornerRadius
+        color: root.background
+        borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
+        padding: Style.spacing.panelPadding
 
-      ColumnLayout {
-        anchors.fill: parent
-        spacing: Style.spacing.panelGap
+        ColumnLayout {
+          anchors.fill: parent
+          spacing: Style.spacing.panelGap
 
-        // ---- Title bar
+          // ---- Title bar
         RowLayout {
           Layout.fillWidth: true
           Text {
@@ -1470,78 +1470,78 @@ Item {
         }
       }
     }
-  }
 
-  // ---- conflict dialog overlay
-  Rectangle {
-    id: conflictDialog
-    visible: root.showConflictDialog
-    anchors.fill: parent
-    color: Qt.rgba(0,0,0,0.5)
-    z: 200
-    MouseArea { anchors.fill: parent; onClicked: {} }
+    // ---- conflict dialog overlay
+    Rectangle {
+      id: conflictDialog
+      visible: root.showConflictDialog
+      anchors.fill: parent
+      color: Qt.rgba(0,0,0,0.5)
+      z: 200
+      MouseArea { anchors.fill: parent; onClicked: {} }
 
-    BorderSurface {
-      anchors.centerIn: parent
-      width: Math.min(Style.space(420), parent.width - Style.gapsOut * 4)
-      height: Math.min(Style.space(240), parent.height - Style.gapsOut * 4)
-      radius: Style.cornerRadius
-      color: root.background
-      borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
-      padding: Style.spacing.panelPadding
+      BorderSurface {
+        anchors.centerIn: parent
+        width: Math.min(Style.space(420), parent.width - Style.gapsOut * 4)
+        height: Math.min(Style.space(240), parent.height - Style.gapsOut * 4)
+        radius: Style.cornerRadius
+        color: root.background
+        borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
+        padding: Style.spacing.panelPadding
 
-      ColumnLayout {
-        anchors.fill: parent
-        spacing: Style.spacing.panelGap
+        ColumnLayout {
+          anchors.fill: parent
+          spacing: Style.spacing.panelGap
 
-        Text {
-          text: "Key Conflict"
-          font.pixelSize: Style.font.heading
-          font.bold: true
-          color: root.urgent
-          Layout.alignment: Qt.AlignHCenter
-        }
-        Text {
-          text: "This key combination is already used by another custom binding. Override it?"
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
-          wrapMode: Text.WordWrap
-        }
-        Text {
-          text: "Existing: " + (root.conflictBindings.length > 0 ? root.conflictBindings[0].desc : "unknown")
-          color: Qt.darker(root.foreground, 1.5)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          wrapMode: Text.WordWrap
-        }
-        RowLayout {
-          Layout.fillWidth: true
-          Layout.topMargin: Style.spacing.md
-          Item { Layout.fillWidth: true }
-          Button {
-            text: "Cancel"
-            foreground: root.foreground
-            accent: root.accent
-            fontFamily: root.fontFamily
-            onClicked: { root.showConflictDialog = false; root.pendingNewBind = null }
+          Text {
+            text: "Key Conflict"
+            font.pixelSize: Style.font.heading
+            font.bold: true
+            color: root.urgent
+            Layout.alignment: Qt.AlignHCenter
           }
-          Button {
-            text: "Override"
-            foreground: root.foreground
-            accent: root.urgent
-            fontFamily: root.fontFamily
-            onClicked: root.confirmConflictOverride()
+          Text {
+            text: "This key combination is already used by another custom binding. Override it?"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            wrapMode: Text.WordWrap
+          }
+          Text {
+            text: "Existing: " + (root.conflictBindings.length > 0 ? root.conflictBindings[0].desc : "unknown")
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+          RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: Style.spacing.md
+            Item { Layout.fillWidth: true }
+            Button {
+              text: "Cancel"
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              onClicked: { root.showConflictDialog = false; root.pendingNewBind = null }
+            }
+            Button {
+              text: "Override"
+              foreground: root.foreground
+              accent: root.urgent
+              fontFamily: root.fontFamily
+              onClicked: root.confirmConflictOverride()
+            }
           }
         }
       }
     }
-  }
 
-  IpcHandler {
-    target: "pikaga.aurabind"
-    function open() { root.open("{}") }
-    function close() { root.dismiss() }
-    function toggle() { root.toggle() }
-  }
-}
+    IpcHandler {
+      target: "pikaga.aurabind"
+      function open() { root.open("{}") }
+      function close() { root.dismiss() }
+      function toggle() { root.toggle() }
+    }
+  } // close PanelWindow
+} // close root Item
