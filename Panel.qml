@@ -9,9 +9,9 @@ import qs.Ui
 import "LuaConfig.js" as LuaConfig
 
 // AuraBind v2.0 — Omarchy Hyprland keybindings manager.
-// Scans Lua config files for every default binding, writes user overrides
-// into a managed block in ~/.config/hypr/bindings.lua, detects conflicts,
-// and includes an on-screen app picker for the "Open App" action type.
+// Shows every active keybinding (default + custom), edits create managed
+// overrides in ~/.config/hypr/bindings.lua, detects conflicts, and
+// includes an on-screen app picker for the "Open App" action type.
 
 Item {
   id: root
@@ -25,27 +25,37 @@ Item {
   readonly property string configPath: home + "/.config/hypr/bindings.lua"
 
   property bool opened: false
-  property var bindings: []
-  property var userBindings: []
+
+  // ---- data
+  property var allDefaults: []           // raw from scanner (pre-merge)
+  property var mergedBindings: []        // defaults + user overrides (merged, sorted)
+  property var userBindings: []          // parsed from managed block lines
+  property var rawManagedLines: []       // the raw body lines of the managed block
+
+  // ---- UI state
   property bool isCapturing: false
   property string capturedMod: ""
   property string capturedKey: ""
   property string errorText: ""
   property string statusText: ""
   property int selectedActionIndex: 0
-  property int bindingsRevision: 0
+  property int editIndex: -1
+  property bool showAppPicker: false
+  property bool showConflictDialog: false
+  property var conflictBindings: []
+  property var pendingNewBind: null
 
+  // ---- filter state
+  property string searchText: ""
+  property string categoryFilter: "All"
+
+  // ---- colors & style
   property color background: Color.menu.background
   property color foreground: Color.menu.text
   property color accent: Color.accent
   property color scrim: Color.menu.scrim
+  property color urgent: Color.urgent
   property string fontFamily: Style.font.menuFamily
-
-  property string categoryFilter: "All"
-  property var installedApps: []
-  property bool showAppPicker: false
-  property bool showConflictDialog: false
-  property var conflictBindings: []
 
   readonly property var categories: [
     "All", "Applications", "Window Management", "Media & Audio",
@@ -89,12 +99,15 @@ Item {
 
   function open(payloadJson) {
     root.opened = true
-    errorText = ""
-    statusText = ""
+    root.errorText = ""
+    root.statusText = ""
+    root.editIndex = -1
+    root.isCapturing = false
+    root.showAppPicker = false
+    root.showConflictDialog = false
+
     loadApps()
     scanBindings()
-    // Also force-read from config file directly in case FileView.onLoaded
-    // doesn't fire on reload
     configFile.reload()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -110,8 +123,8 @@ Item {
   }
 
   function toggle() {
-    if (root.opened) root.dismiss()
-    else root.open("{}")
+    if (root.opened) { root.dismiss() }
+    else { root.open("{}") }
   }
 
   // --------------------------------------------------------- load apps
@@ -127,6 +140,8 @@ Item {
     })
   }
 
+  property var installedApps: []
+
   // ------------------------------------------------------- scan bindings
 
   function scanBindings() {
@@ -137,66 +152,20 @@ Item {
     scannerProc.running = true
   }
 
-  function updateActionFields() {
-    var idx2 = root.selectedActionIndex
-    var isDisabled = idx2 === 6
-    dispatcherField.enabled = !isDisabled
-    paramsField.enabled = idx2 === 1
-    dispatcherLabel.visible = !isDisabled
-    dispatcherField.visible = !isDisabled
-    paramsLabel.visible = idx2 === 1
-    paramsField.visible = idx2 === 1
-    if (idx2 === 0) dispatcherField.placeholderText = "e.g. kitty or firefox"
-    else if (idx2 === 1) dispatcherField.placeholderText = "Full command"
-    else if (idx2 === 2) dispatcherField.placeholderText = "e.g. 1 or 2"
-    else if (idx2 === 3) dispatcherField.placeholderText = "e.g. omarchy.shell toggle"
-    else if (idx2 === 4) dispatcherField.placeholderText = "e.g. hl.dsp.window.close()"
-    else if (idx2 === 5) dispatcherField.placeholderText = "e.g. https://app.example.com"
-    else if (idx2 === 6) { dispatcherField.text = ""; paramsField.text = "" }
-  }
-
   function onScanComplete(text) {
-    var all = LuaConfig.parseBindings(text)
-    var managed = parseManagedConfig(configFile.text())
+    var defaults = LuaConfig.parseBindings(text)
 
-    var userByKey = {}
-    for (var i = 0; i < managed.length; i++) {
-      var u = managed[i]
-      u.source = "custom"
-      userByKey[u.keys + "|" + u.desc] = u
-    }
+    // Parse the managed block from bindings.lua
+    var split = LuaConfig.splitBlock(configFile.text())
+    var managedLines = split.found ? split.body.split("\n") : []
+    root.rawManagedLines = managedLines
 
-    var merged = []
-    var seen = {}
-    for (var j = 0; j < all.length; j++) {
-      var b = all[j]
-      var key2 = b.keys + "|" + b.desc
-      if (userByKey[key2]) {
-        if (!seen[key2]) {
-          var u2 = userByKey[key2]
-          u2.source = "custom"
-          merged.push(u2)
-          seen[key2] = true
-        }
-        delete userByKey[key2]
-      } else {
-        if (!seen[key2]) {
-          merged.push(b)
-          seen[key2] = true
-        }
-      }
-    }
-    for (var k in userByKey) {
-      if (!seen[k]) {
-        userByKey[k].source = "custom"
-        merged.push(userByKey[k])
-        seen[k] = true
-      }
-    }
+    var result = LuaConfig.mergeBindings(defaults, managedLines)
+    root.allDefaults = defaults
+    root.mergedBindings = result.merged
+    root.userBindings = result.userBindings
 
-    root.bindings = merged
-    root.userBindings = managed
-    root.bindingsRevision += 1
+    root.statusText = root.mergedBindings.length + " bindings loaded"
     statusClear.restart()
   }
 
@@ -216,43 +185,16 @@ Item {
     return "Other"
   }
 
-  function filteredBindings(search, category, revision) {
+  function getFilteredBindings() {
     var out = []
-    for (var i = 0; i < root.bindings.length; i++) {
-      var b = root.bindings[i]
+    for (var i = 0; i < root.mergedBindings.length; i++) {
+      var b = root.mergedBindings[i]
       var searchable = (b.keys + " " + b.desc + " " + b.command).toLowerCase()
-      if (search !== "" && searchable.indexOf(search.toLowerCase()) === -1) continue
-      if (category !== "All" && categorize(b) !== category) continue
+      if (root.searchText !== "" && searchable.indexOf(root.searchText.toLowerCase()) === -1) continue
+      if (root.categoryFilter !== "All" && categorize(b) !== root.categoryFilter) continue
       out.push(b)
     }
     return out
-  }
-
-  // ------------------------------------------------------- managed block parsing
-
-  function parseManagedConfig(text) {
-    var split = LuaConfig.splitBlock(text)
-    if (!split.found) return []
-    var binds = []
-    var lines = split.body.split("\n")
-    for (var i = 0; i < lines.length; i++) {
-      var line = lines[i].trim()
-      if (line === "" || line.startsWith("--")) continue
-      var m = line.match(/^o\.bind\("([^"]+)",\s*"([^"]*)",\s*"(.+)"\)$/)
-      if (m) {
-        binds.push({
-          type: "bind", keys: m[1], desc: m[2] || "", command: m[3], source: "custom"
-        })
-        continue
-      }
-      var u = line.match(/^hl\.unbind\("([^"]+)"\)$/)
-      if (u) {
-        binds.push({
-          type: "unbind", keys: u[1], desc: "Disable Default", command: "", source: "custom"
-        })
-      }
-    }
-    return binds
   }
 
   // ------------------------------------------------------- save config
@@ -274,14 +216,16 @@ Item {
     var current = configFile.text()
     var next = LuaConfig.applyBlock(current, body)
     if (next === current) { reloadProc.running = true; return }
-    root.statusText = "Saving"
+    root.statusText = "Saving..."
     root.selfWrite = true
     configFile.setText(next)
   }
 
+  property bool selfWrite: false
+
   function noteSaved() {
     root.selfWrite = false
-    root.statusText = "Saved"
+    root.statusText = "Saved! hyprctl reload..."
     reloadProc.running = true
     configFile.reload()
     scanBindings()
@@ -290,54 +234,33 @@ Item {
   function noteSaveFailed() {
     root.selfWrite = false
     root.statusText = ""
-    root.errorText = "Write failed"
-  }
-
-  function rebuildBindings() {
-    var all = []
-    for (var i = 0; i < root.bindings.length; i++) {
-      var b = root.bindings[i]
-      if (b.source !== "custom") all.push(b)
-    }
-    for (var j = 0; j < root.userBindings.length; j++) {
-      all.push(root.userBindings[j])
-    }
-    root.bindings = all
-    root.bindingsRevision += 1
-  }
-
-  // ------------------------------------------------------- conflict detection
-
-  function findConflicts() {
-    var conflictMap = {}
-    var conflicts = []
-    for (var ic = 0; ic < root.bindings.length; ic++) {
-      var bc = root.bindings[ic]
-      var kc = bc.keys
-      if (!conflictMap[kc]) conflictMap[kc] = []
-      conflictMap[kc].push(bc)
-    }
-    for (var cc in conflictMap) {
-      if (conflictMap[cc].length > 1) {
-        for (var i9 = 0; i9 < conflictMap[cc].length; i9++) {
-          conflicts.push(conflictMap[cc][i9])
-        }
-      }
-    }
-    return conflicts
+    root.errorText = "Write failed — check permissions"
   }
 
   // ------------------------------------------------------- binding CRUD
 
   function editBinding(index) {
-    var bind = root.bindings[index]
+    // index is from the filtered list. Find the actual binding.
+    var filtered = root.getFilteredBindings()
+    var bind = filtered[index]
     if (!bind) return
-    addDialog.editIndex = index
-    var arr = bind.keys.split(" + ")
+
+    // Find index in mergedBindings to set editIndex on the right one
+    for (var i = 0; i < root.mergedBindings.length; i++) {
+      if (root.mergedBindings[i] === bind) {
+        root.editIndex = i
+        break
+      }
+    }
+
+    var bind2 = root.mergedBindings[root.editIndex]
+    if (!bind2) return
+
+    var arr = bind2.keys.split(" + ")
     root.capturedKey = arr.pop()
     root.capturedMod = arr.join(" + ")
-    descField.text = bind.desc
-    setActionFromBinding(bind)
+    descField.text = bind2.desc
+    setActionFromBinding(bind2)
     addDialog.visible = true
   }
 
@@ -381,33 +304,73 @@ Item {
     }
   }
 
+  function updateActionFields() {
+    var isDisabled = root.selectedActionIndex === 6
+    dispatcherField.enabled = !isDisabled
+    paramsField.enabled = root.selectedActionIndex === 1
+    dispatcherLabel.visible = !isDisabled
+    dispatcherField.visible = !isDisabled
+    paramsLabel.visible = root.selectedActionIndex === 1
+    paramsField.visible = root.selectedActionIndex === 1
+    if (root.selectedActionIndex === 0) dispatcherField.placeholderText = "e.g. kitty or firefox"
+    else if (root.selectedActionIndex === 1) dispatcherField.placeholderText = "Full command"
+    else if (root.selectedActionIndex === 2) dispatcherField.placeholderText = "e.g. 1 or 2"
+    else if (root.selectedActionIndex === 3) dispatcherField.placeholderText = "e.g. omarchy.shell toggle"
+    else if (root.selectedActionIndex === 4) dispatcherField.placeholderText = "e.g. hl.dsp.window.close()"
+    else if (root.selectedActionIndex === 5) dispatcherField.placeholderText = "e.g. https://app.example.com"
+    else if (root.selectedActionIndex === 6) { dispatcherField.text = ""; paramsField.text = "" }
+  }
+
   function deleteBinding(index) {
-    var bind = root.bindings[index]
+    var filtered = root.getFilteredBindings()
+    var bind = filtered[index]
     if (!bind) return
+
     if (bind.source === "custom") {
+      // Remove from userBindings
       var newUser = []
-      for (var i3 = 0; i3 < root.userBindings.length; i3++) {
-        var ub = root.userBindings[i3]
+      for (var i = 0; i < root.userBindings.length; i++) {
+        var ub = root.userBindings[i]
         if (ub.keys === bind.keys && ub.desc === bind.desc) continue
+        if (ub.type === "unbind" && ub.keys === bind.keys) continue
         newUser.push(ub)
       }
       root.userBindings = newUser
-      rebuildBindings()
-      saveConfig()
+      remergeAndSave()
     } else {
+      // Default binding → add an unbind for this key
       var found = false
-      for (var i4 = 0; i4 < root.userBindings.length; i4++) {
-        if (root.userBindings[i4].keys === bind.keys) { found = true; break }
+      for (var j = 0; j < root.userBindings.length; j++) {
+        if (root.userBindings[j].type === "unbind" && root.userBindings[j].keys === bind.keys) {
+          found = true
+          break
+        }
       }
       if (!found) {
         root.userBindings.push({
           type: "unbind", keys: bind.keys, desc: "Disable Default", command: ""
         })
-        rebuildBindings()
-        saveConfig()
+        remergeAndSave()
       }
     }
   }
+
+  function remergeAndSave() {
+    // Re-parse the managed body to get current userBindings
+    var split = LuaConfig.splitBlock(configFile.text())
+    var managedLines = split.found ? split.body.split("\n") : []
+    var parsed = []
+    for (var i = 0; i < managedLines.length; i++) {
+      var p = LuaConfig.parseManagedLine(managedLines[i])
+      if (p) parsed.push(p)
+    }
+    root.userBindings = parsed
+    var result = LuaConfig.mergeBindings(root.allDefaults, managedLines)
+    root.mergedBindings = result.merged
+    saveConfig()
+  }
+
+  // ------------------------------------------------------- save binding
 
   function saveBinding() {
     var modPrefix = root.capturedMod !== "" ? root.capturedMod + " + " : ""
@@ -415,6 +378,7 @@ Item {
     if (root.capturedKey === "UNKNOWN" || fullKeys.trim() === "") return
 
     if (root.selectedActionIndex === 6) {
+      // Unbind
       addUserBinding({ type: "unbind", keys: fullKeys, desc: descField.text || "Disabled", command: "" })
       return
     }
@@ -422,8 +386,15 @@ Item {
     var cmd = buildCommandString()
     if (cmd === null) return
 
-    var nb2 = { type: "bind", keys: fullKeys, desc: descField.text || "Custom Binding", command: cmd, source: "custom", kind: "custom" }
-    checkConflicts(fullKeys, nb2)
+    var nb = {
+      type: "bind",
+      keys: fullKeys,
+      desc: descField.text || "Custom Binding",
+      command: cmd,
+      source: "custom",
+      kind: "custom"
+    }
+    checkConflicts(fullKeys, nb)
   }
 
   function buildCommandString() {
@@ -451,8 +422,8 @@ Item {
 
   function checkConflicts(keys, newBind) {
     root.conflictBindings = []
-    for (var i6 = 0; i6 < root.bindings.length; i6++) {
-      var b = root.bindings[i6]
+    for (var i = 0; i < root.mergedBindings.length; i++) {
+      var b = root.mergedBindings[i]
       if (b.source === "custom" && b.keys === keys && b.desc !== newBind.desc) {
         root.conflictBindings.push(b)
       }
@@ -465,23 +436,26 @@ Item {
     }
   }
 
-  property var pendingNewBind: null
-
   function confirmConflictOverride() {
     root.showConflictDialog = false
     var nb = root.pendingNewBind
-    var newUser3 = []
-    for (var i7 = 0; i7 < root.userBindings.length; i7++) {
-      var ub2 = root.userBindings[i7]
-      if (ub2.keys === nb.keys) continue
-      newUser3.push(ub2)
+    root.pendingNewBind = null
+    // Remove existing binding with same keys
+    var newUser = []
+    for (var i = 0; i < root.userBindings.length; i++) {
+      var ub = root.userBindings[i]
+      if (ub.keys === nb.keys) continue
+      newUser.push(ub)
     }
-    root.userBindings = newUser3
-    root.userBindings.push(nb)
-    rebuildBindings()
+    newUser.push(nb)
+    root.userBindings = newUser
+
+    var result = LuaConfig.mergeBindings(root.allDefaults, root.rawManagedLines)
+    root.mergedBindings = result.merged
+    root.userBindings = result.userBindings
     saveConfig()
     addDialog.visible = false
-    addDialog.editIndex = -1
+    root.editIndex = -1
     root.capturedMod = ""
     root.capturedKey = ""
   }
@@ -492,18 +466,22 @@ Item {
   }
 
   function addUserBinding(nb) {
-    var newUser4 = []
-    for (var i8 = 0; i8 < root.userBindings.length; i8++) {
-      var ub3 = root.userBindings[i8]
-      if (ub3.keys === nb.keys) continue
-      newUser4.push(ub3)
+    // Remove any existing binding with same keys
+    var newUser = []
+    for (var i = 0; i < root.userBindings.length; i++) {
+      var ub = root.userBindings[i]
+      if (ub.keys === nb.keys) continue
+      newUser.push(ub)
     }
-    newUser4.push(nb)
-    root.userBindings = newUser4
-    rebuildBindings()
+    newUser.push(nb)
+    root.userBindings = newUser
+
+    var result = LuaConfig.mergeBindings(root.allDefaults, root.rawManagedLines)
+    root.mergedBindings = result.merged
+    root.userBindings = result.userBindings
     saveConfig()
     addDialog.visible = false
-    addDialog.editIndex = -1
+    root.editIndex = -1
     root.capturedMod = ""
     root.capturedKey = ""
   }
@@ -511,9 +489,9 @@ Item {
   // ----------------------------------------------------------- key capture
 
   function startCapture() {
-    isCapturing = true
-    capturedMod = ""
-    capturedKey = ""
+    root.isCapturing = true
+    root.capturedMod = ""
+    root.capturedKey = ""
     Qt.callLater(function() { captureCatcher.forceActiveFocus() })
   }
 
@@ -538,17 +516,16 @@ Item {
     if (key >= Qt.Key_F1 && key <= Qt.Key_F35) return "F" + (key - Qt.Key_F1 + 1)
     return "UNKNOWN"
   }
-  // ------------------------------------------------------------- processes
+
+  // ------------------------------------------------------------- Processes
 
   Process {
     id: scannerProc
-    // command set dynamically in scanBindings()
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onScanComplete(text)
     }
   }
-
 
   Process {
     id: appScannerProc
@@ -556,8 +533,7 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var entries = String(text || "")
-        root.onAppsScanned(entries)
+        root.onAppsScanned(String(text || ""))
       }
     }
   }
@@ -582,8 +558,8 @@ Item {
 
   Timer {
     id: statusClear
-    interval: 1800
-    running: root.statusText === "Saved"
+    interval: 2500
+    running: root.statusText !== ""
     onTriggered: root.statusText = ""
   }
 
@@ -598,31 +574,53 @@ Item {
     onFileChanged: { if (!root.selfWrite) reload() }
   }
 
+  Timer {
+    id: startupTimer
+    interval: 100
+    running: true
+    repeat: false
+    onTriggered: {
+      scanBindings()
+      loadApps()
+    }
+  }
+
   // ------------------------------------------------------------------- UI
 
   PanelWindow {
     id: window
     visible: root.opened
-    anchors { top: true; bottom: true; left: true; right: true }
+    anchors.fill: parent
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.namespace: "aurabind"
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
 
-    Rectangle { anchors.fill: parent; color: root.scrim; MouseArea { anchors.fill: parent; onClicked: root.dismiss() } }
+    // Scrim (click to dismiss)
+    Rectangle {
+      anchors.fill: parent
+      color: root.scrim
+      MouseArea {
+        anchors.fill: parent
+        onClicked: root.dismiss()
+      }
+    }
 
+    // Main card
     BorderSurface {
       id: card
       anchors.centerIn: parent
-      width: Math.min(Style.space(860), window.width - Style.gapsOut * 4)
-      height: Math.min(Style.space(700), window.height - Style.gapsOut * 4)
-      radius: Style.cornerRadius; color: root.background
+      width: Math.min(Style.space(900), window.width - Style.gapsOut * 4)
+      height: Math.min(Style.space(740), window.height - Style.gapsOut * 4)
+      radius: Style.cornerRadius
+      color: root.background
       borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
       padding: Style.spacing.panelPadding
 
       MouseArea { anchors.fill: parent; onClicked: {} }
 
+      // Keyboard navigation catcher (not capturing)
       Item {
         id: keyCatcher
         anchors.fill: parent
@@ -644,30 +642,69 @@ Item {
         }
       }
 
+      // Capture overlay
       Rectangle {
-        anchors.fill: parent; visible: root.isCapturing; color: root.background; z: 10
+        anchors.fill: parent
+        visible: root.isCapturing
+        color: root.background
+        z: 10
         ColumnLayout {
-          anchors.centerIn: parent; spacing: Style.spacing.lg
-          Text { text: "Press a key combination... (Esc to cancel)"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.heading; Layout.alignment: Qt.AlignHCenter }
-          Text { text: root.capturedMod !== "" ? root.capturedMod + " + " + root.capturedKey : "..."; color: root.accent; font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true; Layout.alignment: Qt.AlignHCenter }
-          Button { text: "Cancel"; Layout.alignment: Qt.AlignHCenter; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: root.isCapturing = false }
+          anchors.centerIn: parent
+          spacing: Style.spacing.xl
+          Text {
+            text: "Press a key combination... (Esc to cancel)"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.heading
+            Layout.alignment: Qt.AlignHCenter
+          }
+          Text {
+            text: root.capturedMod !== "" ? root.capturedMod + " + " + root.capturedKey : "..."
+            color: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.title
+            font.bold: true
+            Layout.alignment: Qt.AlignHCenter
+          }
+          Button {
+            text: "Cancel"
+            Layout.alignment: Qt.AlignHCenter
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            onClicked: { root.isCapturing = false }
+          }
         }
+
         Item {
-          id: captureCatcher; anchors.fill: parent
+          id: captureCatcher
+          anchors.fill: parent
           Keys.onPressed: function(event) {
-            if (event.key === Qt.Key_Escape) { root.isCapturing = false; event.accepted = true; return }
-            if (event.key === Qt.Key_Shift || event.key === Qt.Key_Control || event.key === Qt.Key_Alt || event.key === Qt.Key_Meta || event.key === Qt.Key_AltGr) { event.accepted = true; return }
+            if (event.key === Qt.Key_Escape) {
+              root.isCapturing = false
+              event.accepted = true
+              return
+            }
+            // Ignore pure modifier presses
+            if (event.key === Qt.Key_Shift || event.key === Qt.Key_Control ||
+                event.key === Qt.Key_Alt || event.key === Qt.Key_Meta ||
+                event.key === Qt.Key_AltGr) {
+              event.accepted = true
+              return
+            }
             var mods = []
             if (event.modifiers & Qt.ShiftModifier) mods.push("SHIFT")
             if (event.modifiers & Qt.ControlModifier) mods.push("CTRL")
             if (event.modifiers & Qt.AltModifier) mods.push("ALT")
             if (event.modifiers & Qt.MetaModifier) mods.push("SUPER")
-            root.capturedMod = mods.join(" + "); root.capturedKey = getKeyString(event.key); event.accepted = true
+            root.capturedMod = mods.join(" + ")
+            root.capturedKey = getKeyString(event.key)
+            event.accepted = true
           }
         }
       }
 
-      // ---- main content
+      // ---- MAIN CONTENT LAYOUT
       ColumnLayout {
         anchors.fill: parent
         anchors.topMargin: card.contentTopInset
@@ -676,183 +713,434 @@ Item {
         anchors.leftMargin: card.contentLeftInset
         spacing: Style.spacing.panelGap
 
+        // Header
         Item {
           Layout.fillWidth: true
-          Layout.preferredHeight: Math.max(titleBlock.implicitHeight, headerActions.implicitHeight)
+          Layout.preferredHeight: Math.max(headerTitle.implicitHeight, headerActions.implicitHeight)
 
           Column {
-            id: titleBlock
+            id: headerTitle
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.spacing.xxs
-            Text { text: "AuraBind"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.heading; font.bold: true }
-            Text { text: root.configPath; color: Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+            Text {
+              text: "AuraBind — Keybind Manager"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.heading
+              font.bold: true
+            }
+            Text {
+              text: root.configPath
+              color: Qt.darker(root.foreground, 1.6)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
           }
 
           Row {
             id: headerActions
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.spacing.lg
-            Text { text: root.bindings.length + (root.bindings.length === 1 ? " binding" : " bindings") + " (" + root.bindingsRevision + ")"; color: root.bindings.length > 0 ? root.accent : Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-            PanelActionButton { iconText: "X"; tooltipText: "Close"; foreground: root.foreground; anchors.verticalCenter: parent.verticalCenter; onClicked: root.dismiss() }
+            spacing: Style.spacing.md
+            Rectangle {
+              height: 20
+              width: countText.implicitWidth + 12
+              radius: 4
+              color: root.mergedBindings.length > 0 ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15) : "transparent"
+              anchors.verticalCenter: parent.verticalCenter
+              Text {
+                id: countText
+                anchors.centerIn: parent
+                text: root.mergedBindings.length + " total" + (root.mergedBindings.length !== 1 ? "" : "")
+                color: root.mergedBindings.length > 0 ? root.accent : Qt.darker(root.foreground, 1.6)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+            PanelActionButton { iconText: "X"; tooltipText: "Close"; foreground: root.foreground; onClicked: root.dismiss() }
           }
         }
 
         PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
 
+        // Search & filter bar
         RowLayout {
-          Layout.fillWidth: true; spacing: Style.spacing.sm
-          TextField { id: searchField; Layout.fillWidth: true; placeholderText: "Search keys, description, or command..."; foreground: root.foreground; accent: root.accent }
+          Layout.fillWidth: true
+          spacing: Style.spacing.sm
+
+          TextField {
+            id: searchField
+            Layout.fillWidth: true
+            placeholderText: "Search keys, description, or command..."
+            foreground: root.foreground
+            accent: root.accent
+            onTextChanged: { root.searchText = text }
+          }
+
           Dropdown {
-            id: categoryDropdown; Layout.preferredWidth: Style.space(180)
-            foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
-            value: root.categoryFilter; options: root.categories
+            id: categoryDropdown
+            Layout.preferredWidth: Style.space(180)
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            value: root.categoryFilter
+            options: root.categories
             onChanged: function(val) { root.categoryFilter = val }
           }
         }
 
+        // Binding list
         ListView {
           id: bindList
-          Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: Style.spacing.xs; currentIndex: -1
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          clip: true
+          spacing: Style.spacing.xxs
+          currentIndex: -1
           ScrollBar.vertical: ScrollBar {}
-          model: root.filteredBindings(searchField.text, root.categoryFilter, root.bindingsRevision)
+          model: root.getFilteredBindings()
 
           delegate: Rectangle {
-            width: bindList.width; height: 52
-            color: modelData.source === "custom" ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.08) : Color.menu.selectedBackground
+            width: bindList.width
+            height: 56
+            color: {
+              if (modelData.type === "unbind") return Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.06)
+              if (modelData.source === "custom") return Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.08)
+              return ListView.isCurrentItem ? Style.hoverFillFor(root.foreground, root.accent) : "transparent"
+            }
             radius: Style.cornerRadius
             border.width: modelData.type === "unbind" ? 1 : 0
-            border.color: modelData.type === "unbind" ? Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.3) : "transparent"
+            border.color: modelData.type === "unbind" ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.25) : "transparent"
+
+            // Highlight row background on current
+            Rectangle {
+              anchors.fill: parent
+              visible: ListView.isCurrentItem && modelData.type !== "unbind" && modelData.source !== "custom"
+              radius: Style.cornerRadius
+              color: Style.hoverFillFor(root.foreground, root.accent)
+            }
 
             RowLayout {
-              anchors.fill: parent; anchors.margins: Style.spacing.md; spacing: Style.spacing.sm
+              anchors.fill: parent
+              anchors.margins: Style.spacing.rowPaddingX
+              spacing: Style.spacing.sm
+
+              // Key combo column
               Column {
-                Layout.preferredWidth: Style.space(160); spacing: 2
-                Text { text: modelData.keys; color: modelData.type === "unbind" ? Color.urgent : root.accent; font.family: root.fontFamily; font.bold: true; font.pixelSize: Style.font.subtitle; elide: Text.ElideRight }
+                Layout.preferredWidth: Style.space(170)
+                spacing: 2
+                Text {
+                  text: modelData.keys
+                  color: modelData.type === "unbind" ? root.urgent : root.accent
+                  font.family: root.fontFamily
+                  font.bold: true
+                  font.pixelSize: Style.font.subtitle
+                  elide: Text.ElideRight
+                }
                 Rectangle {
-                  visible: root.categorize(modelData) !== "Other"; height: 16; width: catText.implicitWidth + 6; radius: 3
-                  color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
-                  Text { id: catText; anchors.centerIn: parent; text: root.categorize(modelData); color: Qt.darker(root.foreground, 1.5); font.pixelSize: 9; font.family: root.fontFamily }
+                  visible: root.categorize(modelData) !== "Other"
+                  height: 16
+                  width: catLabel.implicitWidth + 6
+                  radius: 3
+                  color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.12)
+                  Text {
+                    id: catLabel
+                    anchors.centerIn: parent
+                    text: root.categorize(modelData)
+                    color: Qt.darker(root.foreground, 1.4)
+                    font.pixelSize: 9
+                    font.family: root.fontFamily
+                  }
                 }
               }
-              Column { Layout.fillWidth: true; Layout.preferredWidth: Style.space(120); spacing: 2
-                Text { text: modelData.desc; color: modelData.source === "custom" ? root.accent : root.foreground; font.family: root.fontFamily; font.weight: modelData.source === "custom" ? Font.Bold : Font.DemiBold; font.pixelSize: Style.font.body; elide: Text.ElideRight }
-                Text { text: modelData.source === "custom" ? "Custom" : ""; color: Qt.darker(root.accent, 1.2); font.family: root.fontFamily; font.pixelSize: 9; visible: modelData.source === "custom" }
+
+              // Description column
+              Column {
+                Layout.preferredWidth: Style.space(140)
+                Layout.fillWidth: true
+                spacing: 2
+                Text {
+                  text: modelData.desc
+                  color: modelData.source === "custom" ? root.accent : root.foreground
+                  font.family: root.fontFamily
+                  font.weight: modelData.source === "custom" ? Font.Bold : Font.DemiBold
+                  font.pixelSize: Style.font.body
+                  elide: Text.ElideRight
+                }
+                Text {
+                  text: modelData.source === "custom" ? "✦ Custom" : (modelData.type === "unbind" ? "✕ Disabled" : "Default")
+                  color: modelData.source === "custom" ? Qt.lighter(root.accent, 1.2) : (modelData.type === "unbind" ? root.urgent : Qt.darker(root.foreground, 1.5))
+                  font.family: root.fontFamily
+                  font.pixelSize: 9
+                }
               }
-              Text { Layout.fillWidth: true; text: modelData.type === "unbind" ? "Disabled" : modelData.command; color: modelData.type === "unbind" ? Color.urgent : Qt.darker(root.foreground, 1.3); font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.WordWrap }
-              Button { text: "Edit"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: editBinding(index) }
-              Button { text: modelData.source === "custom" ? "Del" : "Unbind"; foreground: root.foreground; accent: Color.urgent; fontFamily: root.fontFamily; onClicked: deleteBinding(index) }
+
+              // Command column
+              Text {
+                Layout.fillWidth: true
+                Layout.preferredWidth: Style.space(180)
+                text: modelData.type === "unbind" ? "Disabled" : modelData.command
+                color: modelData.type === "unbind" ? root.urgent : Qt.darker(root.foreground, 1.3)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+                maximumLineCount: 2
+                wrapMode: Text.WordWrap
+              }
+
+              // Action buttons
+              PanelActionButton {
+                iconText: "✎"
+                tooltipText: "Edit"
+                foreground: root.foreground
+                onClicked: editBinding(index)
+              }
+              PanelActionButton {
+                iconText: modelData.source === "custom" ? "✕" : "⊘"
+                tooltipText: modelData.source === "custom" ? "Delete custom" : "Disable default"
+                foreground: root.urgent
+                onClicked: deleteBinding(index)
+              }
             }
           }
 
+          // Empty state
           Rectangle {
-            anchors.centerIn: parent; visible: bindList.count === 0; width: parent.width; height: 100; color: "transparent"
-            Text { anchors.centerIn: parent; text: searchField.text ? 'No bindings found' : "Press + Add Binding"; color: Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+            anchors.centerIn: parent
+            visible: bindList.count === 0
+            width: parent.width
+            height: 100
+            color: "transparent"
+            Text {
+              anchors.centerIn: parent
+              text: root.searchText ? "No matching bindings found" : "No bindings loaded — click + Add Binding to create one"
+              color: Qt.darker(root.foreground, 1.6)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
           }
         }
 
+        // Footer
         Item {
-          Layout.fillWidth: true; Layout.preferredHeight: footerText.implicitHeight + Style.spacing.md
+          Layout.fillWidth: true
+          Layout.preferredHeight: footerBtn.implicitHeight + Style.spacing.md
+
           Button {
-            id: addButton; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
-            text: "+ Add Binding"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; enabled: !root.isCapturing
-            onClicked: { addDialog.editIndex = -1; root.capturedMod = ""; root.capturedKey = ""; descField.text = ""; dispatcherField.text = ""; paramsField.text = ""; paramsField.visible = false; paramsLabel.visible = false; root.selectedActionIndex = 0; addDialog.visible = true }
+            id: footerBtn
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: "+ Add Binding"
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            enabled: !root.isCapturing
+            onClicked: {
+              root.editIndex = -1
+              root.capturedMod = ""
+              root.capturedKey = ""
+              descField.text = ""
+              dispatcherField.text = ""
+              paramsField.text = ""
+              paramsField.visible = false
+              paramsLabel.visible = false
+              root.selectedActionIndex = 0
+              addDialog.visible = true
+            }
           }
+
           Text {
-            id: footerText; anchors.left: addButton.right; anchors.leftMargin: Style.spacing.lg; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-            text: { if (root.errorText !== "") return "Error: " + root.errorText; if (root.statusText !== "") return root.statusText; return "Up/Down or J/K  Enter edit  Del disable  Esc close  Filter by search & category" }
-            color: root.errorText !== "" ? Color.urgent : Qt.darker(root.foreground, 1.6)
-            font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.WordWrap
+            id: footerHint
+            anchors.left: footerBtn.right
+            anchors.leftMargin: Style.spacing.lg
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: {
+              if (root.errorText !== "") return "⚠ Error: " + root.errorText
+              if (root.statusText !== "") return root.statusText
+              return "↑↓ or J/K · Enter edit · Del disable · Esc close"
+            }
+            color: root.errorText !== "" ? root.urgent : Qt.darker(root.foreground, 1.6)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+            maximumLineCount: 2
+            wrapMode: Text.WordWrap
           }
         }
       }
     }
+  }
 
-    // ---- add/edit dialog overlay
-    Rectangle {
-      id: addDialog
-      property int editIndex: -1
-      visible: false; anchors.fill: parent; color: Qt.rgba(0,0,0,0.5); z: 100
-      MouseArea { anchors.fill: parent; onClicked: {} }
+  // ---- add/edit dialog overlay
+  Rectangle {
+    id: addDialog
+    property int editIndex: -1
+    visible: false
+    anchors.fill: parent
+    color: Qt.rgba(0,0,0,0.5)
+    z: 100
+    MouseArea { anchors.fill: parent; onClicked: {} }
 
-      BorderSurface {
-        id: dialogCard
-        anchors.centerIn: parent
-        width: Math.min(Style.space(500), parent.width - Style.gapsOut * 4)
-        height: Math.min(Style.space(620), parent.height - Style.gapsOut * 4)
-        radius: Style.cornerRadius; color: root.background
-        borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
-        padding: Style.spacing.panelPadding
+    BorderSurface {
+      id: dialogCard
+      anchors.centerIn: parent
+      width: Math.min(Style.space(520), parent.width - Style.gapsOut * 4)
+      height: Math.min(Style.space(680), parent.height - Style.gapsOut * 4)
+      radius: Style.cornerRadius
+      color: root.background
+      borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
+      padding: Style.spacing.panelPadding
 
-        ColumnLayout {
-          anchors.fill: parent; spacing: Style.spacing.panelGap
+      ColumnLayout {
+        anchors.fill: parent
+        spacing: Style.spacing.panelGap
 
-          Text { text: addDialog.editIndex === -1 ? "Add Binding" : "Edit Binding"; font.pixelSize: Style.font.heading; font.bold: true; color: root.foreground; Layout.alignment: Qt.AlignHCenter }
+        Text {
+          text: addDialog.editIndex === -1 ? "Add Binding" : "Edit Binding"
+          font.pixelSize: Style.font.heading
+          font.bold: true
+          color: root.foreground
+          Layout.alignment: Qt.AlignHCenter
+        }
 
-          Text { text: "Key Combination"; color: root.foreground }
-          Button { Layout.fillWidth: true; text: root.isCapturing ? "Capturing..." : ((root.capturedMod !== "" ? root.capturedMod + " + " : "") + root.capturedKey || "Click to capture..."); foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: startCapture() }
+        // Key capture button
+        Text { text: "Key Combination"; color: root.foreground }
+        Button {
+          Layout.fillWidth: true
+          Layout.preferredHeight: Style.space(36)
+          text: root.isCapturing ? "Capturing..." : (root.capturedKey ? root.capturedMod + " + " + root.capturedKey : "Click to capture...")
+          foreground: root.foreground
+          accent: root.accent
+          fontFamily: root.fontFamily
+          onClicked: startCapture()
+        }
 
-          Text { text: "Description"; color: root.foreground }
-          TextField { id: descField; Layout.fillWidth: true; placeholderText: "e.g. Open Terminal"; foreground: root.foreground; accent: root.accent }
+        // Description
+        Text { text: "Description"; color: root.foreground }
+        TextField {
+          id: descField
+          Layout.fillWidth: true
+          placeholderText: "e.g. Open Terminal"
+          foreground: root.foreground
+          accent: root.accent
+        }
 
-          Text { text: "Action Type"; color: root.foreground }
-          Flow {
-            Layout.fillWidth: true; spacing: Style.spacing.xxs
-            Button {
-              id: openAppBtn; text: "Open App"; checked: root.selectedActionIndex === 0
-              checkable: true; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
-              onClicked: { root.selectedActionIndex = 0; updateActionFields() }
-            }
-            Button {
-              id: customCmdBtn; text: "Custom Cmd"; checked: root.selectedActionIndex === 1
-              checkable: true; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
-              onClicked: { root.selectedActionIndex = 1; updateActionFields() }
-            }
-            Button {
-              id: workspaceBtn; text: "Workspace"; checked: root.selectedActionIndex === 2
-              checkable: true; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
-              onClicked: { root.selectedActionIndex = 2; updateActionFields() }
-            }
-            Button {
-              id: pluginBtn; text: "Plugin"; checked: root.selectedActionIndex === 3
-              checkable: true; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
-              onClicked: { root.selectedActionIndex = 3; updateActionFields() }
-            }
-            Button {
-              id: dispatcherBtn; text: "Lua/Disp"; checked: root.selectedActionIndex === 4
-              checkable: true; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
-              onClicked: { root.selectedActionIndex = 4; updateActionFields() }
-            }
-            Button {
-              id: webAppBtn; text: "Web App"; checked: root.selectedActionIndex === 5
-              checkable: true; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
-              onClicked: { root.selectedActionIndex = 5; updateActionFields() }
-            }
-            Button {
-              id: unbindBtn; text: "Unbind"; checked: root.selectedActionIndex === 6
-              checkable: true; foreground: root.foreground; accent: Color.urgent; fontFamily: root.fontFamily
-              onClicked: { root.selectedActionIndex = 6; updateActionFields() }
-            }
-            Button {
-              id: appPickerButton
-              text: "Browse Apps"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
-              visible: root.selectedActionIndex === 0
-              onClicked: { showAppPicker = true; appPickTarget = "dispatcher"; appSearchField.text = ""; Qt.callLater(function() { appSearchField.forceActiveFocus() }) }
+        // Action Type
+        Text { text: "Action Type"; color: root.foreground }
+        Flow {
+          Layout.fillWidth: true
+          spacing: Style.spacing.xxs
+
+          Button {
+            text: "Open App"
+            accent: root.selectedActionIndex === 0 ? root.accent : Qt.darker(root.foreground, 1.5)
+            foreground: root.selectedActionIndex === 0 ? root.accent : root.foreground
+            fontFamily: root.fontFamily
+            onClicked: { root.selectedActionIndex = 0; updateActionFields() }
+          }
+          Button {
+            text: "Custom Cmd"
+            accent: root.selectedActionIndex === 1 ? root.accent : Qt.darker(root.foreground, 1.5)
+            foreground: root.selectedActionIndex === 1 ? root.accent : root.foreground
+            fontFamily: root.fontFamily
+            onClicked: { root.selectedActionIndex = 1; updateActionFields() }
+          }
+          Button {
+            text: "Workspace"
+            accent: root.selectedActionIndex === 2 ? root.accent : Qt.darker(root.foreground, 1.5)
+            foreground: root.selectedActionIndex === 2 ? root.accent : root.foreground
+            fontFamily: root.fontFamily
+            onClicked: { root.selectedActionIndex = 2; updateActionFields() }
+          }
+          Button {
+            text: "Plugin"
+            accent: root.selectedActionIndex === 3 ? root.accent : Qt.darker(root.foreground, 1.5)
+            foreground: root.selectedActionIndex === 3 ? root.accent : root.foreground
+            fontFamily: root.fontFamily
+            onClicked: { root.selectedActionIndex = 3; updateActionFields() }
+          }
+          Button {
+            text: "Lua/Disp"
+            accent: root.selectedActionIndex === 4 ? root.accent : Qt.darker(root.foreground, 1.5)
+            foreground: root.selectedActionIndex === 4 ? root.accent : root.foreground
+            fontFamily: root.fontFamily
+            onClicked: { root.selectedActionIndex = 4; updateActionFields() }
+          }
+          Button {
+            text: "Web App"
+            accent: root.selectedActionIndex === 5 ? root.accent : Qt.darker(root.foreground, 1.5)
+            foreground: root.selectedActionIndex === 5 ? root.accent : root.foreground
+            fontFamily: root.fontFamily
+            onClicked: { root.selectedActionIndex = 5; updateActionFields() }
+          }
+          Button {
+            id: unbindBtn
+            text: "Unbind"
+            accent: root.selectedActionIndex === 6 ? root.urgent : Qt.darker(root.foreground, 1.5)
+            foreground: root.selectedActionIndex === 6 ? root.urgent : root.foreground
+            fontFamily: root.fontFamily
+            onClicked: { root.selectedActionIndex = 6; updateActionFields() }
+          }
+          Button {
+            id: appPickerBtn
+            text: "Browse Apps"
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            visible: root.selectedActionIndex === 0
+            onClicked: {
+              root.showAppPicker = true
+              appSearchField.text = ""
+              Qt.callLater(function() { appSearchField.forceActiveFocus() })
             }
           }
+        }
 
-          Text { id: dispatcherLabel; text: "Command / Dispatcher"; color: root.foreground }
-          TextField { id: dispatcherField; Layout.fillWidth: true; placeholderText: "e.g. kitty or firefox"; foreground: root.foreground; accent: root.accent }
+        // Dispatcher field
+        Text { id: dispatcherLabel; text: "Command / Dispatcher"; color: root.foreground }
+        TextField {
+          id: dispatcherField
+          Layout.fillWidth: true
+          placeholderText: "e.g. kitty or firefox"
+          foreground: root.foreground
+          accent: root.accent
+        }
 
-          Text { id: paramsLabel; visible: false; text: "Arguments"; color: root.foreground }
-          TextField { id: paramsField; Layout.fillWidth: true; visible: false; placeholderText: "e.g. --new-window"; foreground: root.foreground; accent: root.accent }
+        // Params field (only for Custom Command)
+        Text { id: paramsLabel; visible: false; text: "Arguments"; color: root.foreground }
+        TextField {
+          id: paramsField
+          Layout.fillWidth: true
+          visible: false
+          placeholderText: "e.g. --new-window"
+          foreground: root.foreground
+          accent: root.accent
+        }
 
-          RowLayout {
-            Layout.fillWidth: true; Layout.topMargin: Style.spacing.md
-            Item { Layout.fillWidth: true }
-            Button { text: "Cancel"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: { addDialog.visible = false; addDialog.editIndex = -1; root.isCapturing = false } }
-            Button { text: "Save"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: saveBinding() }
+        // Dialog actions
+        RowLayout {
+          Layout.fillWidth: true
+          Layout.topMargin: Style.spacing.md
+          Item { Layout.fillWidth: true }
+          Button {
+            text: "Cancel"
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            onClicked: {
+              addDialog.visible = false
+              addDialog.editIndex = -1
+              root.isCapturing = false
+            }
+          }
+          Button {
+            text: "Save"
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            onClicked: saveBinding()
           }
         }
       }
@@ -863,56 +1151,118 @@ Item {
   Rectangle {
     id: appPicker
     visible: root.showAppPicker
-    anchors.fill: parent; color: Qt.rgba(0,0,0,0.5); z: 200
+    anchors.fill: parent
+    color: Qt.rgba(0,0,0,0.5)
+    z: 200
     MouseArea { anchors.fill: parent; onClicked: {} }
 
     BorderSurface {
       anchors.centerIn: parent
       width: Math.min(Style.space(480), parent.width - Style.gapsOut * 4)
-      height: Math.min(Style.space(500), parent.height - Style.gapsOut * 4)
-      radius: Style.cornerRadius; color: root.background
+      height: Math.min(Style.space(540), parent.height - Style.gapsOut * 4)
+      radius: Style.cornerRadius
+      color: root.background
       borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
       padding: Style.spacing.panelPadding
 
       ColumnLayout {
-        anchors.fill: parent; spacing: Style.spacing.panelGap
+        anchors.fill: parent
+        spacing: Style.spacing.panelGap
 
-        Text { text: "Browse Applications"; font.pixelSize: Style.font.heading; font.bold: true; color: root.foreground; Layout.alignment: Qt.AlignHCenter }
-        TextField { id: appSearchField; Layout.fillWidth: true; placeholderText: "Search apps..."; foreground: root.foreground; accent: root.accent }
+        Text {
+          text: "Browse Applications"
+          font.pixelSize: Style.font.heading
+          font.bold: true
+          color: root.foreground
+          Layout.alignment: Qt.AlignHCenter
+        }
+
+        TextField {
+          id: appSearchField
+          Layout.fillWidth: true
+          placeholderText: "Search apps..."
+          foreground: root.foreground
+          accent: root.accent
+        }
 
         ListView {
-          Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: Style.spacing.xs
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          clip: true
+          spacing: Style.spacing.xs
           ScrollBar.vertical: ScrollBar {}
           model: {
-            var q = (appSearchField.text || "").toLowerCase(); var out = []
+            var q = (appSearchField.text || "").toLowerCase()
+            var out = []
             for (var i = 0; i < root.installedApps.length; i++) {
               var a = root.installedApps[i]
-              if (q === "" || (a.name.toLowerCase().indexOf(q) !== -1) || (a.exec.toLowerCase().indexOf(q) !== -1)) out.push(a)
+              if (q === "" || (a.name.toLowerCase().indexOf(q) !== -1) || (a.exec.toLowerCase().indexOf(q) !== -1))
+                out.push(a)
             }
             return out
           }
+
           delegate: Rectangle {
-            width: parent.width; height: 42; color: Color.menu.selectedBackground; radius: Style.cornerRadius
+            width: parent.width
+            height: 42
+            color: Color.menu.selectedBackground
+            radius: Style.cornerRadius
             MouseArea {
               anchors.fill: parent
-              onClicked: { dispatcherField.text = modelData.exec; root.showAppPicker = false }
+              onClicked: {
+                dispatcherField.text = modelData.exec
+                root.showAppPicker = false
+              }
             }
             RowLayout {
-              anchors.fill: parent; anchors.margins: Style.spacing.md; spacing: Style.spacing.sm
+              anchors.fill: parent
+              anchors.margins: Style.spacing.md
+              spacing: Style.spacing.sm
               Rectangle {
-                width: 32; height: 32; radius: 4; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
-                Text { anchors.centerIn: parent; text: modelData.name.charAt(0).toUpperCase(); color: root.accent; font.family: root.fontFamily; font.bold: true; font.pixelSize: Style.font.subtitle }
+                width: 32
+                height: 32
+                radius: 4
+                color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
+                Text {
+                  anchors.centerIn: parent
+                  text: modelData.name.charAt(0).toUpperCase()
+                  color: root.accent
+                  font.family: root.fontFamily
+                  font.bold: true
+                  font.pixelSize: Style.font.subtitle
+                }
               }
               Column {
-                Layout.fillWidth: true; spacing: 2
-                Text { text: modelData.name; color: root.foreground; font.family: root.fontFamily; font.weight: Font.DemiBold; font.pixelSize: Style.font.body; elide: Text.ElideRight }
-                Text { text: modelData.comment || modelData.exec; color: Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
+                Layout.fillWidth: true
+                spacing: 2
+                Text {
+                  text: modelData.name
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.weight: Font.DemiBold
+                  font.pixelSize: Style.font.body
+                  elide: Text.ElideRight
+                }
+                Text {
+                  text: modelData.comment || modelData.exec
+                  color: Qt.darker(root.foreground, 1.6)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                }
               }
             }
           }
         }
 
-        Button { Layout.alignment: Qt.AlignHCenter; text: "Cancel"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: root.showAppPicker = false }
+        Button {
+          Layout.alignment: Qt.AlignHCenter
+          text: "Cancel"
+          foreground: root.foreground
+          accent: root.accent
+          fontFamily: root.fontFamily
+          onClicked: root.showAppPicker = false
+        }
       }
     }
   }
@@ -921,42 +1271,65 @@ Item {
   Rectangle {
     id: conflictDialog
     visible: root.showConflictDialog
-    anchors.fill: parent; color: Qt.rgba(0,0,0,0.5); z: 200
+    anchors.fill: parent
+    color: Qt.rgba(0,0,0,0.5)
+    z: 200
     MouseArea { anchors.fill: parent; onClicked: {} }
 
     BorderSurface {
       anchors.centerIn: parent
-      width: Math.min(Style.space(400), parent.width - Style.gapsOut * 4)
-      height: Math.min(Style.space(220), parent.height - Style.gapsOut * 4)
-      radius: Style.cornerRadius; color: root.background
+      width: Math.min(Style.space(420), parent.width - Style.gapsOut * 4)
+      height: Math.min(Style.space(240), parent.height - Style.gapsOut * 4)
+      radius: Style.cornerRadius
+      color: root.background
       borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
       padding: Style.spacing.panelPadding
 
       ColumnLayout {
-        anchors.fill: parent; spacing: Style.spacing.panelGap
-        Text { text: "Key Conflict"; font.pixelSize: Style.font.heading; font.bold: true; color: Color.urgent; Layout.alignment: Qt.AlignHCenter }
-        Text { text: "This key combination is already used by another custom binding. Override it?"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; wrapMode: Text.WordWrap }
-        Text { text: "Existing: " + (root.conflictBindings.length > 0 ? root.conflictBindings[0].desc : "unknown"); color: Qt.darker(root.foreground, 1.5); font.family: root.fontFamily; font.pixelSize: Style.font.caption; wrapMode: Text.WordWrap }
+        anchors.fill: parent
+        spacing: Style.spacing.panelGap
+
+        Text {
+          text: "Key Conflict"
+          font.pixelSize: Style.font.heading
+          font.bold: true
+          color: root.urgent
+          Layout.alignment: Qt.AlignHCenter
+        }
+        Text {
+          text: "This key combination is already used by another custom binding. Override it?"
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
+        }
+        Text {
+          text: "Existing: " + (root.conflictBindings.length > 0 ? root.conflictBindings[0].desc : "unknown")
+          color: Qt.darker(root.foreground, 1.5)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
         RowLayout {
-          Layout.fillWidth: true; Layout.topMargin: Style.spacing.md
+          Layout.fillWidth: true
+          Layout.topMargin: Style.spacing.md
           Item { Layout.fillWidth: true }
-          Button { text: "Cancel"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: { root.showConflictDialog = false; root.pendingNewBind = null } }
-          Button { text: "Override"; foreground: root.foreground; accent: Color.urgent; fontFamily: root.fontFamily; onClicked: root.confirmConflictOverride() }
+          Button {
+            text: "Cancel"
+            foreground: root.foreground
+            accent: root.accent
+            fontFamily: root.fontFamily
+            onClicked: { root.showConflictDialog = false; root.pendingNewBind = null }
+          }
+          Button {
+            text: "Override"
+            foreground: root.foreground
+            accent: root.urgent
+            fontFamily: root.fontFamily
+            onClicked: root.confirmConflictOverride()
+          }
         }
       }
-    }
-  }
-
-  // Run initial scan once the component is ready.
-  // This ensures bindings load even if the panel opens before FileView fires.
-  Timer {
-    id: startupTimer
-    interval: 100
-    running: true
-    repeat: false
-    onTriggered: {
-      scanBindings()
-      loadApps()
     }
   }
 
@@ -967,3 +1340,4 @@ Item {
     function toggle() { root.toggle() }
   }
 }
+
