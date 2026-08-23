@@ -273,6 +273,53 @@ function mergeBindings(defaults, managedLines) {
   return { merged: customs.concat(defaults2), userBindings: userBindings }
 }
 
+// ---------------------------------------------------------- hasRealBindings
+
+// Returns true if the managed block text contains any real binding lines.
+// Empty lines and comment lines don't count.
+function hasRealBindings(body) {
+  if (!body) return false
+  var lines = String(body || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    if (parseManagedLine(lines[i])) return true
+  }
+  return false
+}
+
+// ---------------------------------------------------------- autoPopulateDefaults
+
+// Convert an array of default bindings (from scanner) to managed block lines.
+// Returns a string that can be inserted between the fences.
+function autoPopulateLines(defaults) {
+  if (!defaults || defaults.length === 0) return ""
+  var lines = []
+  var seen = {}
+  for (var i = 0; i < defaults.length; i++) {
+    var b = defaults[i]
+    if (!b || b.type !== "bind") continue
+    var key = b.keys + "|" + (b.desc || "")
+    if (seen[key]) continue
+    seen[key] = true
+    // Build an appropriate o.bind() call based on kind
+    var cmdArg = b.command || b.arg || ""
+    // Check for lua-style dispatchers that shouldn't be wrapped in quotes
+    if (b.kind === "lua" || (b.command && (b.command.indexOf("hl.dsp") >= 0 || b.command.indexOf("hl.dispatch") >= 0))) {
+      lines.push('o.bind("' + escapeKeys(b.keys) + '", "' + escapeDesc(b.desc) + '", ' + cmdArg + ')')
+    } else {
+      lines.push('o.bind("' + escapeKeys(b.keys) + '", "' + escapeDesc(b.desc) + '", "' + cmdArg.replace(/"/g, '\\"') + '")')
+    }
+  }
+  return lines.join("\n")
+}
+
+function escapeKeys(keys) {
+  return String(keys || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+}
+
+function escapeDesc(desc) {
+  return String(desc || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+}
+
 // -------------------------------------------------------------------- desktop entries
 
 function parseDesktopEntries(text) {
