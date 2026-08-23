@@ -42,7 +42,6 @@ Item {
   // ---- UI state
   property string errorText: ""
   property string statusText: ""
-  property bool _autoPopulated: false
   property int editIndex: -1
   property bool showConflictDialog: false
   property var conflictBindings: []
@@ -140,7 +139,6 @@ Item {
     root.opened = true
     root.errorText = ""
     root.statusText = ""
-    root._autoPopulated = false
     root.editIndex = -1
     root.showConflictDialog = false
     root.selectedActionIndex = 0
@@ -277,20 +275,6 @@ Item {
     var managedLines = split.found ? split.body.split("\n") : []
     root.rawManagedLines = managedLines
 
-    if (defaults.length > 0 && !LuaConfig.hasRealBindings(split.body) && !root._autoPopulated) {
-      root._autoPopulated = true
-      var populateBody = LuaConfig.autoPopulateLines(defaults)
-      if (populateBody) {
-        var newText = LuaConfig.applyBlock(configFile.text(), populateBody)
-        if (newText !== configFile.text()) {
-          configFile.setText(newText)
-          root.statusText = "Auto-populated " + defaults.length + " default bindings"
-          statusClear.restart()
-          return
-        }
-      }
-    }
-
     var result = LuaConfig.mergeBindings(defaults, managedLines)
     root.allDefaults = defaults
     root.mergedBindings = result.merged
@@ -331,7 +315,7 @@ Item {
   // ------------------------------------------------------- save config
 
   function renderManagedBody() {
-    return LuaConfig.renderManagedBody(root.userBindings)
+    return LuaConfig.renderManagedBody(root.allDefaults, root.userBindings)
   }
 
   function saveConfig() {

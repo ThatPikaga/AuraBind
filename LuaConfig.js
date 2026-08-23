@@ -95,7 +95,7 @@ function detectActionType(binding, installedApps) {
 
 // ------------------------------------------------------------- render a binding to managed-block lines
 
-function renderBindingLine(binding, actionHint) {
+function renderBindingLine(defaults, binding, actionHint) {
   if (binding.type === "unbind") {
     return ['hl.unbind("' + esc(binding.keys) + '")']
   }
@@ -105,10 +105,38 @@ function renderBindingLine(binding, actionHint) {
   var bindLine = isLua
     ? 'o.bind("' + esc(binding.keys) + '", "' + esc(binding.desc) + '", ' + cmd + ')'
     : 'o.bind("' + esc(binding.keys) + '", "' + esc(binding.desc) + '", "' + esc(cmd) + '")'
+
+  // If this custom binding overrides a default with the same key but different
+  // description/command, prepend hl.unbind() to avoid duplicate registrations.
+  if (defaults && hasDefaultForKey(binding.keys, defaults)) {
+    var dup = findDefaultForKey(binding.keys, defaults)
+    if (dup && (dup.desc !== binding.desc || dup.command !== cmd)) {
+      return [makeActionHint(at), 'hl.unbind("' + esc(binding.keys) + '")', bindLine]
+    }
+  }
+
   if (at >= 0) {
     return [makeActionHint(at), bindLine]
   }
   return [bindLine]
+}
+
+// Check if any default binding uses the given key combo.
+function hasDefaultForKey(keys, defaults) {
+  if (!defaults) return false
+  for (var i = 0; i < defaults.length; i++) {
+    if (defaults[i].keys === keys) return true
+  }
+  return false
+}
+
+// Find the first default binding with the given key combo.
+function findDefaultForKey(keys, defaults) {
+  if (!defaults) return null
+  for (var i = 0; i < defaults.length; i++) {
+    if (defaults[i].keys === keys) return defaults[i]
+  }
+  return null
 }
 
 function renderCmd(binding, actionType) {
@@ -184,21 +212,27 @@ function parseManagedBlock(body) {
 
 function parseBindings(records) {
   var bindings = []
+  var seenKeys = {}
   var lines = String(records || "").split("\n")
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i].trim()
     if (line === "") continue
     var parts = line.split("\t")
     if (parts[0] === "b" && parts.length >= 3) {
+      var keys = modmaskToKeys(parseInt(parts[1]) || 0, parts[2])
+      var desc = parts[3] || ""
+      var dedupKey = keys + "|" + desc
+      if (seenKeys[dedupKey]) continue  // skip duplicates
+      seenKeys[dedupKey] = true
       bindings.push({
         type: "bind",
         modmask: parseInt(parts[1]) || 0,
         key: parts[2],
-        desc: parts[3] || "",
+        desc: desc,
         kind: parts[4] || "",
         arg: parts[5] || "",
         command: buildCommand(parts[4] || "", parts[5] || ""),
-        keys: modmaskToKeys(parseInt(parts[1]) || 0, parts[2]),
+        keys: keys,
         source: "default"
       })
     } else if (parts[0] === "u" && parts.length >= 3) {
@@ -269,8 +303,16 @@ function mergeBindings(defaults, managedLines) {
     if (userByKey[key2]) {
       if (!seen[key2]) {
         var u2 = userByKey[key2]
-        u2.source = "custom"
-        merged.push(u2)
+        // Distinguish true overrides from exact duplicates.
+        // If command matches, this is just a re-statement of the default —
+        // keep it as a default instead of marking it custom.
+        var cmdMatch = (u2.command === b.command)
+        if (cmdMatch) {
+          merged.push(b)
+        } else {
+          u2.source = "custom"
+          merged.push(u2)
+        }
         seen[key2] = true
       }
       delete userByKey[key2]
@@ -319,11 +361,11 @@ function hasRealBindings(body) {
 
 // ---------------------------------------------------------- render managed body
 
-function renderManagedBody(userBindings) {
+function renderManagedBody(defaults, userBindings) {
   var lines = []
   for (var i = 0; i < userBindings.length; i++) {
     var b = userBindings[i]
-    var rendered = renderBindingLine(b)
+    var rendered = renderBindingLine(defaults, b)
     for (var j = 0; j < rendered.length; j++) {
       lines.push(rendered[j])
     }
@@ -331,27 +373,10 @@ function renderManagedBody(userBindings) {
   return lines.join("\n")
 }
 
-// ---------------------------------------------------------- auto-populate defaults
-
-function autoPopulateLines(defaults) {
-  if (!defaults || defaults.length === 0) return ""
-  var lines = []
-  var seen = {}
-  for (var i = 0; i < defaults.length; i++) {
-    var b = defaults[i]
-    if (!b || b.type !== "bind") continue
-    var key = b.keys + "|" + (b.desc || "")
-    if (seen[key]) continue
-    seen[key] = true
-    var cmdArg = b.command || b.arg || ""
-    if (b.kind === "lua" || (b.command && (b.command.indexOf("hl.dsp") >= 0 || b.command.indexOf("hl.dispatch") >= 0))) {
-      lines.push('o.bind("' + esc(b.keys) + '", "' + esc(b.desc) + '", ' + cmdArg + ')')
-    } else {
-      lines.push('o.bind("' + esc(b.keys) + '", "' + esc(b.desc) + '", "' + esc(cmdArg) + '")')
-    }
-  }
-  return lines.join("\n")
-}
+// OBSOLETE: autoPopulateLines is no longer used.
+// It wrote ALL default bindings into the managed block, creating duplicates
+// with Omarchy's own default binding system. The managed block now stores
+// ONLY custom user overrides.
 
 
 // ---------------------------------------------------------- find disabled bindings from raw file
