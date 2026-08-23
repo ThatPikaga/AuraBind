@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "pikaga.aurabind",
+  "id": "ThatPikaga.aurabind",
   "name": "AuraBind",
-  "version": "3.0.0",
+  "version": "1.1.0",
   "author": "ThatPikaga",
   "license": "MIT",
-  "description": "A panel to manage Omarchy keybindings with combo builder, app/plugin dropdowns, disabled bindings management, conflict detection, and key-combo builder.",
+  "description": "A dedicated panel to manage Omarchy keybindings with live preview, desktop shortcuts, and auto-registration.",
   "kinds": ["panel", "service"],
   "entryPoints": {
     "panel": "Panel.qml",

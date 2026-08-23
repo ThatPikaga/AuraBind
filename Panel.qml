@@ -268,29 +268,83 @@ Item {
   }
 
   // ------------------------------------------------------- scan bindings
+  //
+  // Reads all Lua binding source files as plain text and PARSEs them with
+  // the non-executing parser in LuaConfig.js. No file is ever loaded or
+  // executed as Lua code — eliminating the arbitrary-code-execution risk
+  // from the old read.lua approach.
 
   function scanBindings() {
-    var luaPath = root.pluginDir + "/read.lua"
-    var oPath = root.omarchyPath || ""
-    var envPrefix = oPath ? "OMARCHY_PATH=" + oPath + " " : ""
-    scannerProc.command = ["sh", "-c", envPrefix + "lua '" + luaPath.replace(/'/g, "'\\''") + "'"]
-    scannerProc.running = true
+    // User config is already loaded via configFile.text()
+    // Load defaults from Omarchy default binding directory
+    var oPath = root.omarchyPath || "/usr/share/omarchy"
+    // Process to cat all default binding files
+    defaultsScannerProc.command = ["sh", "-c", "cat " + oPath + "/default/hypr/bindings/*.lua 2>/dev/null || true"]
+    defaultsScannerProc.running = true
   }
 
-  function onScanComplete(text) {
-    var defaults = LuaConfig.parseBindings(text)
-    var split = LuaConfig.splitBlock(configFile.text())
-    var managedLines = split.found ? split.body.split("\n") : []
+  function onDefaultsScanned(text) {
+    // Parse default bindings from the concatenated source text
+    var defaults = LuaConfig.parseLuaSourceForBindings(text || "", "default")
+
+    // Parse user's bindings.lua (the non-managed-block portion)
+    var userFileText = configFile.text() || ""
+    var split = LuaConfig.splitBlock(userFileText)
+    var body = split.found ? split.body : ""
+    var beforeBlock = split.found ? split.before : userFileText
+
+    // Parse user custom bindings (from the managed block)
+    var managedLines = body.split("\n")
     root.rawManagedLines = managedLines
 
-    var result = LuaConfig.mergeBindings(defaults, managedLines)
-    root.allDefaults = defaults
-    root.mergedBindings = result.merged
-    root.userBindings = result.userBindings
+    // Also parse any hl.unbind() or o.bind() calls that the user wrote
+    // BEFORE the managed block (outside the fence)
+    var outsideBindings = LuaConfig.parseLuaSourceForBindings(beforeBlock, "custom-outside")
 
-    root.statusText = root.mergedBindings.length + " bindings loaded"
+    // Merge: defaults + outside bindings for display, userBindings from the managed block
+    var allParsed = defaults.slice()
+    // Add outside bindings to the user bindings pool
+    var combinedUserBindings = LuaConfig.parseManagedBlock(managedLines.join("\n"))
+    for (var i = 0; i < outsideBindings.length; i++) {
+      var ob = outsideBindings[i]
+      if (ob.type === "unbind") {
+        // Check if it's already in the managed block
+        var found = false
+        for (var j = 0; j < combinedUserBindings.length; j++) {
+          if (combinedUserBindings[j].type === "unbind" && combinedUserBindings[j].keys === ob.keys) {
+            found = true; break
+          }
+        }
+        if (!found) combinedUserBindings.push(ob)
+      }
+    }
+
+    var result = LuaConfig.mergeBindings(allParsed, managedLines)
+    // Keep outside-bindings visible too
+    for (var k = 0; k < outsideBindings.length; k++) {
+      var ob2 = outsideBindings[k]
+      var exists = false
+      for (var j2 = 0; j2 < result.merged.length; j2++) {
+        if (result.merged[j2].keys === ob2.keys && result.merged[j2].type === ob2.type) {
+          exists = true; break
+        }
+      }
+      if (!exists) {
+        ob2.source = "custom"
+        result.merged.unshift(ob2)
+      }
+    }
+
+    root.allDefaults = allParsed
+    root.mergedBindings = result.merged
+    root.userBindings = combinedUserBindings
+
+    root.statusText = result.merged.length + " bindings loaded"
     statusClear.restart()
   }
+
+  // For completeness, also explicitly read user hl.bind/o.bind calls
+  // from outside the managed block (the -- before the fence)
 
   // --------------------------------------------------------- categorization
 
@@ -598,10 +652,10 @@ Item {
   // ------------------------------------------------------------- Processes
 
   Process {
-    id: scannerProc
+    id: defaultsScannerProc
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onScanComplete(text)
+      onStreamFinished: root.onDefaultsScanned(text)
     }
   }
 

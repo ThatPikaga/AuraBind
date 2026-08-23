@@ -6,9 +6,10 @@ try:
         ["flatpak", "list", "--app", "--columns=name,application"],
         capture_output=True, text=True, timeout=10
     )
-    for line in result.stdout.strip().split("\n"):
-        parts = line.split("\t")
+    for line in result.stdout.strip().split("
+"):
+        parts = line.split("	")
         if len(parts) >= 2:
-            print(f"{parts[0]}\t{parts[1]}")
+            print(f"{parts[0]}	{parts[1]}")
 except:
     pass
