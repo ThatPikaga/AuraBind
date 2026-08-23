@@ -422,7 +422,13 @@ Item {
           TextField { id: dispatcherField; Layout.fillWidth: true; color: root.foreground; background: Rectangle { color: Color.input.background; radius: Style.cornerRadius } }
           Text { text: "Parameters"; color: root.foreground }
           TextField { id: paramsField; Layout.fillWidth: true; color: root.foreground; background: Rectangle { color: Color.input.background; radius: Style.cornerRadius } }
-          RowLayout { Layout.fillWidth: true; Layout.topMargin: Style.spacing.md; Item { Layout.fillWidth: true }; Button { text: "Cancel"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: { addDialog.visible = false; addDialog.editIndex = -1 } }; Button { text: "Save"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: saveBinding() } }
+          RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: Style.spacing.md
+            Item { Layout.fillWidth: true }
+            Button { text: "Cancel"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: { addDialog.visible = false; addDialog.editIndex = -1 } }
+            Button { text: "Save"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: saveBinding() }
+          }
         }
       }
     }
