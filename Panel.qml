@@ -174,14 +174,14 @@ Item {
     var arr = bind.keys.split(" + ")
     capturedKey = arr.pop(); capturedMod = arr.join(" + ")
     descField.text = bind.desc
-    if (bind.type === "unbind") { actionCombo.currentIndex = 6 }
+    if (bind.type === "unbind") { actionCombo.value = actionCombo.options[6] }
     else {
       var cmd = bind.command.toLowerCase()
-      if (cmd.startsWith("workspace ")) actionCombo.currentIndex = 3
-      else if (cmd === "killactive") actionCombo.currentIndex = 4
-      else if (cmd === "reload") actionCombo.currentIndex = 5
-      else if (cmd.indexOf("omarchy-shell") !== -1) actionCombo.currentIndex = 2
-      else actionCombo.currentIndex = 1
+      if (cmd.startsWith("workspace ")) actionCombo.value = actionCombo.options[3]
+      else if (cmd === "killactive") actionCombo.value = actionCombo.options[4]
+      else if (cmd === "reload") actionCombo.value = actionCombo.options[5]
+      else if (cmd.indexOf("omarchy-shell") !== -1) actionCombo.value = actionCombo.options[2]
+      else actionCombo.value = actionCombo.options[1]
       var parts = bind.command.split(" ")
       dispatcherField.text = parts.shift() || ""; paramsField.text = parts.join(" ")
     }
@@ -197,7 +197,7 @@ Item {
     var fullKeys = modPrefix + capturedKey
     if (capturedKey === "UNKNOWN" || fullKeys.trim() === "") return
     var fullCmd = dispatcherField.text.trim() + (paramsField.text.trim() ? " " + paramsField.text.trim() : "")
-    var nb = { type: actionCombo.currentIndex === 6 ? "unbind" : "bind", keys: fullKeys, desc: descField.text || "Custom Binding", command: fullCmd.trim() }
+    var nb = { type: actionCombo.value === actionCombo.options[6] ? "unbind" : "bind", keys: fullKeys, desc: descField.text || "Custom Binding", command: fullCmd.trim() }
     var binds = [...keybinds]
     if (addDialog.editIndex !== -1) binds[addDialog.editIndex] = nb; else binds.push(nb)
     keybinds = binds; saveConfig()
@@ -330,20 +330,20 @@ Item {
             id: headerActions
             anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: Style.spacing.lg
             Text { text: keybinds.length + (keybinds.length === 1 ? " binding" : " bindings"); color: keybinds.length > 0 ? root.accent : Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-            Button { text: "Add"; enabled: !root.isCapturing; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; anchors.verticalCenter: parent.verticalCenter; onClicked: { addDialog.editIndex = -1; capturedMod = ""; capturedKey = ""; descField.text = ""; dispatcherField.text = "exec"; paramsField.text = ""; actionCombo.currentIndex = 0; addDialog.visible = true } }
+            Button { text: "Add"; enabled: !root.isCapturing; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; anchors.verticalCenter: parent.verticalCenter; onClicked: { addDialog.editIndex = -1; capturedMod = ""; capturedKey = ""; descField.text = ""; dispatcherField.text = "exec"; paramsField.text = ""; actionCombo.value = actionCombo.options[0]; addDialog.visible = true } }
             PanelActionButton { iconText: "X"; tooltipText: "Close - Esc"; foreground: root.foreground; onClicked: root.dismiss() }
           }
         }
 
         PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
-        TextField { id: searchField; Layout.fillWidth: true; placeholderText: "Search bindings..."; color: root.foreground; background: Rectangle { color: Color.input.background; radius: Style.cornerRadius; border.color: Color.input.border; border.width: 1 } }
+        TextField { id: searchField; Layout.fillWidth: true; placeholderText: "Search bindings..."; foreground: root.foreground; accent: root.accent }
 
         ListView {
           id: bindList; Layout.fillWidth: true; Layout.fillHeight: true; clip: true
           model: keybinds; spacing: Style.spacing.xs; currentIndex: -1
           ScrollBar.vertical: ScrollBar {}
           delegate: Rectangle {
-            width: bindList.width; height: 48; color: Color.surface; radius: Style.cornerRadius
+            width: bindList.width; height: 48; color: Color.menu.selectedBackground; radius: Style.cornerRadius
             opacity: searchField.text === "" || (modelData.keys + " " + modelData.desc + " " + modelData.command).toLowerCase().indexOf(searchField.text.toLowerCase()) !== -1 ? 1 : 0
             visible: opacity > 0
             Behavior on opacity { NumberAnimation { duration: 120 } }
@@ -399,14 +399,17 @@ Item {
             onClicked: startCapture()
           }
           Text { text: "Description"; color: root.foreground }
-          TextField { id: descField; Layout.fillWidth: true; placeholderText: "e.g. Open Terminal"; color: root.foreground; background: Rectangle { color: Color.input.background; radius: Style.cornerRadius } }
+          TextField { id: descField; Layout.fillWidth: true; placeholderText: "e.g. Open Terminal"; foreground: root.foreground; accent: root.accent }
           Text { text: "Action Type"; color: root.foreground }
-          ComboBox {
-            id: actionCombo; Layout.fillWidth: true
-            model: ["Open App", "Custom Command", "Start Plugin", "Workspace", "Kill Active", "Reload", "Unbind (Disable Default)"]
-            currentIndex: 0; color: root.foreground; background: Rectangle { color: Color.input.background; radius: Style.cornerRadius }
-            onCurrentIndexChanged: {
-              var idx = currentIndex
+          Dropdown {
+            id: actionCombo; Layout.fillWidth: true; label: ""
+            foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
+            options: ["Open App", "Custom Command", "Start Plugin", "Workspace", "Kill Active", "Reload", "Unbind (Disable Default)"]
+            value: options[0]
+            onChanged: function(val) {
+              var opts = actionCombo.options
+              var idx = -1
+              for (var i = 0; i < opts.length; i++) { if (opts[i] === val) { idx = i; break } }
               dispatcherField.enabled = idx !== 4 && idx !== 5 && idx !== 6
               paramsField.enabled = dispatcherField.enabled
               if (idx === 0) { dispatcherField.text = "exec"; paramsField.placeholderText = "e.g. kitty" }
@@ -419,9 +422,9 @@ Item {
             }
           }
           Text { text: "Dispatcher"; color: root.foreground }
-          TextField { id: dispatcherField; Layout.fillWidth: true; color: root.foreground; background: Rectangle { color: Color.input.background; radius: Style.cornerRadius } }
+          TextField { id: dispatcherField; Layout.fillWidth: true; foreground: root.foreground; accent: root.accent }
           Text { text: "Parameters"; color: root.foreground }
-          TextField { id: paramsField; Layout.fillWidth: true; color: root.foreground; background: Rectangle { color: Color.input.background; radius: Style.cornerRadius } }
+          TextField { id: paramsField; Layout.fillWidth: true; foreground: root.foreground; accent: root.accent }
           RowLayout {
             Layout.fillWidth: true
             Layout.topMargin: Style.spacing.md
