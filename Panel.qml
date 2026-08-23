@@ -26,7 +26,7 @@ Item {
   property var manifest: null
 
   readonly property string home: Quickshell.env("HOME")
-  readonly property string pluginDir: (manifest && manifest.__sourceDir) || (home + "/.config/omarchy/plugins/pikaga.aurabind")
+  readonly property string pluginDir: (manifest && manifest.__sourceDir) || (home + "/.config/omarchy/plugins/ThatPikaga.aurabind")
   readonly property string configPath: home + "/.config/hypr/bindings.lua"
 
   property bool opened: false
@@ -661,7 +661,7 @@ Item {
 
   Process {
     id: appScannerProc
-    command: ["python3", home + "/.config/omarchy/plugins/pikaga.aurabind/scan_apps.py"]
+    command: ["python3", home + "/.config/omarchy/plugins/ThatPikaga.aurabind/scan_apps.py"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -672,7 +672,7 @@ Item {
 
   Process {
     id: flatpakProc
-    command: ["python3", home + "/.config/omarchy/plugins/pikaga.aurabind/scan_flatpak.py"]
+    command: ["python3", home + "/.config/omarchy/plugins/ThatPikaga.aurabind/scan_flatpak.py"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -683,7 +683,7 @@ Item {
 
   Process {
     id: pluginScannerProc
-    command: ["python3", home + "/.config/omarchy/plugins/pikaga.aurabind/scan_plugins.py"]
+    command: ["python3", home + "/.config/omarchy/plugins/ThatPikaga.aurabind/scan_plugins.py"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -2166,7 +2166,7 @@ Item {
     }
 
     IpcHandler {
-      target: "pikaga.aurabind"
+      target: "ThatPikaga.aurabind"
       function open() { root.open("{}") }
       function close() { root.dismiss() }
       function toggle() { root.toggle() }

@@ -2,8 +2,8 @@
 Type=Application
 Name=AuraBind
 GenericName=Omarchy Keybind Manager
-Comment=Edit Omarchy keybindings on the fly with full default binding browser, app picker, and conflict detection
-Exec=omarchy-shell shell toggle pikaga.aurabind
+Comment=Edit Hyprland keybindings on the fly with live key capture
+Exec=omarchy-shell shell toggle ThatPikaga.aurabind
 TryExec=omarchy-shell
 Icon=@ICON@
 Terminal=false
