@@ -6,12 +6,12 @@ import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
+import "LuaConfig.js" as LuaConfig
 
-// AuraBind - a GUI for editing Hyprland keybindings on the fly.
-//
-// Reads and writes a managed block inside ~/.config/hypr/bindings.lua
-// using the same fence pattern as Omaland, so the file survives both
-// hand-edits and plugin writes.
+// AuraBind v2.0 — Omarchy Hyprland keybindings manager.
+// Scans Lua config files for every default binding, writes user overrides
+// into a managed block in ~/.config/hypr/bindings.lua, detects conflicts,
+// and includes an on-screen app picker for the "Open App" action type.
 
 Item {
   id: root
@@ -25,7 +25,8 @@ Item {
   readonly property string configPath: home + "/.config/hypr/bindings.lua"
 
   property bool opened: false
-  property var keybinds: []
+  property var bindings: []
+  property var userBindings: []
   property bool isCapturing: false
   property string capturedMod: ""
   property string capturedKey: ""
@@ -38,14 +39,58 @@ Item {
   property color scrim: Color.menu.scrim
   property string fontFamily: Style.font.menuFamily
 
-  readonly property string beginFence: "-- >>> managed keybindings block <<<"
-  readonly property string endFence:   "-- <<< managed keybindings block >>>"
+  property string categoryFilter: "All"
+  property var installedApps: []
+  property bool showAppPicker: false
+  property bool showConflictDialog: false
+  property var conflictBindings: []
+
+  readonly property var categories: [
+    "All", "Applications", "Window Management", "Media & Audio",
+    "Workspaces", "System & Menus", "Clipboard & Text",
+    "Screenshots & Capture", "Notifications", "Hardware & Display",
+    "Navigation"
+  ]
+
+  readonly property var categoryKeywords: {
+    "Applications": ["browser", "terminal", "file manager", "editor", "music",
+      "spotify", "obsidian", "signal", "docker", "chatgpt", "email",
+      "calculator", "omawrite", "passwords", "youtube", "whatsapp",
+      "calendar", "photos", "maps", "google", "grok", "tmux", "herdr"],
+    "Window Management": ["close window", "full screen", "full width",
+      "toggle window", "pseudo", "pop window", "save window", "restore window",
+      "float", "tile", "group", "split", "opacity", "gaps", "drag", "resize",
+      "scratchpad", "window transparency", "window square", "window gap",
+      "border"],
+    "Media & Audio": ["volume", "mute", "audio", "brightness", "play",
+      "pause", "next track", "previous track", "media", "eject", "keyboard backlight"],
+    "Workspaces": ["workspace", "move window to workspace", "switch to workspace",
+      "scroll active workspace"],
+    "System & Menus": ["omarchy menu", "menu toggle", "system menu",
+      "power menu", "lock system", "background switcher", "theme menu",
+      "toggle top bar", "toggle nightlight", "toggle locking", "toggle idle",
+      "reminder", "share", "calculator", "agent"],
+    "Clipboard & Text": ["copy", "paste", "cut", "clipboard", "universal copy",
+      "universal paste", "universal cut", "transcode"],
+    "Screenshots & Capture": ["screenshot", "screenrecording", "color picker",
+      "capture", "ocr", "text capture", "webcam", "print"],
+    "Notifications": ["notification", "dismiss", "reminder"],
+    "Hardware & Display": ["monitor", "display", "touchpad", "keyboard",
+      "scaling", "bluetooth", "network", "wifi", "battery",
+      "zoom", "internal"],
+    "Navigation": ["focus on", "swap window", "move window", "cycle",
+      "next window", "previous window", "next monitor", "previous monitor",
+      "next workspace", "tab"]
+  }
 
   // ------------------------------------------------------------- lifecycle
 
   function open(payloadJson) {
     root.opened = true
+    errorText = ""
+    statusText = ""
     configFile.reload()
+    loadApps()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -64,65 +109,144 @@ Item {
     else root.open("{}")
   }
 
-  // ------------------------------------------------------------- parsing
+  // --------------------------------------------------------- load apps
 
-  function parseConfig(text) {
-    if (!text) { keybinds = []; return }
-    var split = splitBlock(text)
-    if (!split.found) { keybinds = []; return }
+  function loadApps() {
+    appScannerProc.running = true
+  }
 
+  function onAppsScanned(text) {
+    root.installedApps = LuaConfig.parseDesktopEntries(text || "")
+    root.installedApps.sort(function(a, b) {
+      return (a.name || "").localeCompare(b.name || "")
+    })
+  }
+
+  // ------------------------------------------------------- scan bindings
+
+  function scanBindings() {
+    var luaPath = root.pluginDir + "/read.lua"
+    scannerProc.command = ["lua", luaPath]
+    scannerProc.running = true
+  }
+
+  function onScanComplete(text) {
+    var all = LuaConfig.parseBindings(text)
+    var managed = parseManagedConfig(configFile.text())
+
+    var userByKey = {}
+    for (var i = 0; i < managed.length; i++) {
+      var u = managed[i]
+      u.source = "custom"
+      userByKey[u.keys + "|" + u.desc] = u
+    }
+
+    var merged = []
+    var seen = {}
+    for (var j = 0; j < all.length; j++) {
+      var b = all[j]
+      var key2 = b.keys + "|" + b.desc
+      if (userByKey[key2]) {
+        if (!seen[key2]) {
+          var u2 = userByKey[key2]
+          u2.source = "custom"
+          merged.push(u2)
+          seen[key2] = true
+        }
+        delete userByKey[key2]
+      } else {
+        if (!seen[key2]) {
+          merged.push(b)
+          seen[key2] = true
+        }
+      }
+    }
+    for (var k in userByKey) {
+      if (!seen[k]) {
+        userByKey[k].source = "custom"
+        merged.push(userByKey[k])
+        seen[k] = true
+      }
+    }
+
+    root.bindings = merged
+    root.userBindings = managed
+    statusClear.restart()
+  }
+
+  // --------------------------------------------------------- categorization
+
+  function categorize(binding) {
+    var search = (binding.desc + " " + binding.command + " " + binding.keys).toLowerCase()
+    for (var c = 0; c < root.categories.length; c++) {
+      var cat = root.categories[c]
+      if (cat === "All") continue
+      var keywords = root.categoryKeywords[cat]
+      if (!keywords) continue
+      for (var k = 0; k < keywords.length; k++) {
+        if (search.indexOf(keywords[k].toLowerCase()) !== -1) return cat
+      }
+    }
+    return "Other"
+  }
+
+  function filteredBindings(search, category) {
+    var out = []
+    for (var i = 0; i < root.bindings.length; i++) {
+      var b = root.bindings[i]
+      var searchable = (b.keys + " " + b.desc + " " + b.command).toLowerCase()
+      if (search !== "" && searchable.indexOf(search.toLowerCase()) === -1) continue
+      if (category !== "All" && categorize(b) !== category) continue
+      out.push(b)
+    }
+    return out
+  }
+
+  // ------------------------------------------------------- managed block parsing
+
+  function parseManagedConfig(text) {
+    var split = LuaConfig.splitBlock(text)
+    if (!split.found) return []
     var binds = []
     var lines = split.body.split("\n")
-    for (var line of lines) {
-      line = line.trim()
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim()
       if (line === "" || line.startsWith("--")) continue
-
       var m = line.match(/^o\.bind\("([^"]+)",\s*"([^"]*)",\s*"(.+)"\)$/)
-      if (m) { binds.push({ type: "bind", keys: m[1], desc: m[2], command: m[3] }); continue }
-
+      if (m) {
+        binds.push({
+          type: "bind", keys: m[1], desc: m[2] || "", command: m[3], source: "custom"
+        })
+        continue
+      }
       var u = line.match(/^hl\.unbind\("([^"]+)"\)$/)
-      if (u) binds.push({ type: "unbind", keys: u[1], desc: "Disable Default", command: "" })
+      if (u) {
+        binds.push({
+          type: "unbind", keys: u[1], desc: "Disable Default", command: "", source: "custom"
+        })
+      }
     }
-    keybinds = binds
+    return binds
   }
 
-  function splitBlock(text) {
-    var src = String(text || "")
-    var b = src.indexOf(root.beginFence)
-    if (b === -1) return { found: false, before: src, body: "", after: "" }
-    var e = src.indexOf(root.endFence, b)
-    if (e === -1) return { found: false, before: src, body: "", after: "" }
-    return { found: true, before: src.substring(0, b), body: src.substring(b + root.beginFence.length, e), after: src.substring(e + root.endFence.length) }
-  }
+  // ------------------------------------------------------- save config
 
-  function renderBlockBody() {
+  function renderManagedBody() {
     var lines = []
-    for (var bind of keybinds) {
-      if (bind.type === "bind")
-        lines.push('o.bind("' + bind.keys.replace(/"/g, '\\"') + '", "' + bind.desc.replace(/"/g, '\\"') + '", "' + bind.command.replace(/"/g, '\\"') + '")')
-      else if (bind.type === "unbind")
-        lines.push('hl.unbind("' + bind.keys + '")')
+    for (var i = 0; i < root.userBindings.length; i++) {
+      var b = root.userBindings[i]
+      if (b.type === "bind")
+        lines.push('o.bind("' + b.keys.replace(/"/g, '\\"') + '", "' + b.desc.replace(/"/g, '\\"') + '", "' + b.command.replace(/"/g, '\\"') + '")')
+      else if (b.type === "unbind")
+        lines.push('hl.unbind("' + b.keys + '")')
     }
     return lines.join("\n")
   }
 
-  function applyBlock(text, body) {
-    var split = splitBlock(text)
-    if (!body) {
-      if (!split.found) return String(text || "")
-      return (split.before.replace(/\n+$/, "\n") + split.after.replace(/^\n+/, "")).replace(/\n{3,}$/, "\n")
-    }
-    var block = root.beginFence + "\n  -- Written by AuraBind\n" + body + "\n" + root.endFence
-    if (split.found) return split.before + block + split.after
-    var head = String(text || "")
-    if (head.length > 0 && head[head.length - 1] !== "\n") head += "\n"
-    return head + "\n" + block + "\n"
-  }
-
   function saveConfig() {
-    var body = renderBlockBody()
+    var body = renderManagedBody()
     var current = configFile.text()
-    var next = applyBlock(current, body)
+    var next = LuaConfig.applyBlock(current, body)
     if (next === current) { reloadProc.running = true; return }
     root.statusText = "Saving"
     root.selfWrite = true
@@ -134,13 +258,240 @@ Item {
     root.statusText = "Saved"
     reloadProc.running = true
     configFile.reload()
+    scanBindings()
   }
 
   function noteSaveFailed() {
-    root.selfWrite = false; root.statusText = ""; root.errorText = "Write failed"
+    root.selfWrite = false
+    root.statusText = ""
+    root.errorText = "Write failed"
+  }
+
+  function rebuildBindings() {
+    var all = []
+    for (var i = 0; i < root.bindings.length; i++) {
+      var b = root.bindings[i]
+      if (b.source !== "custom") all.push(b)
+    }
+    for (var j = 0; j < root.userBindings.length; j++) {
+      all.push(root.userBindings[j])
+    }
+    root.bindings = all
+  }
+
+  // ------------------------------------------------------- conflict detection
+
+  function findConflicts() {
+    var conflictMap = {}
+    var conflicts = []
+    for (var ic = 0; ic < root.bindings.length; ic++) {
+      var bc = root.bindings[ic]
+      var kc = bc.keys
+      if (!conflictMap[kc]) conflictMap[kc] = []
+      conflictMap[kc].push(bc)
+    }
+    for (var cc in conflictMap) {
+      if (conflictMap[cc].length > 1) {
+        for (var i9 = 0; i9 < conflictMap[cc].length; i9++) {
+          conflicts.push(conflictMap[cc][i9])
+        }
+      }
+    }
+    return conflicts
+  }
+
+  // ------------------------------------------------------- binding CRUD
+
+  function editBinding(index) {
+    var bind = root.bindings[index]
+    if (!bind) return
+    addDialog.editIndex = index
+    var arr = bind.keys.split(" + ")
+    root.capturedKey = arr.pop()
+    root.capturedMod = arr.join(" + ")
+    descField.text = bind.desc
+    setActionFromBinding(bind)
+    addDialog.visible = true
+  }
+
+  function setActionFromBinding(bind) {
+    if (bind.type === "unbind") {
+      actionCombo.value = actionCombo.options[6]
+      dispatcherField.enabled = false
+      paramsField.enabled = false
+      dispatcherField.text = ""
+      paramsField.text = ""
+      return
+    }
+    dispatcherField.enabled = true
+    paramsField.enabled = true
+    var cmd = (bind.command || "").toLowerCase()
+    var kind = bind.kind || ""
+    if (kind === "lua" || kind === "menu" || kind === "toggle" || kind === "plugin") {
+      actionCombo.value = actionCombo.options[4]
+      dispatcherField.text = bind.command || ""
+      paramsField.text = ""
+    } else if (kind === "webapp") {
+      actionCombo.value = actionCombo.options[5]
+      dispatcherField.text = bind.arg || ""
+      paramsField.text = ""
+    } else if (cmd.indexOf("workspace ") === 0) {
+      actionCombo.value = actionCombo.options[2]
+      dispatcherField.text = bind.command.replace(/^workspace\s+/, "")
+      paramsField.text = ""
+    } else if (cmd === "killactive" || cmd === "reload") {
+      actionCombo.value = actionCombo.options[1]
+      dispatcherField.text = bind.command || ""
+      paramsField.text = ""
+    } else if (kind === "omarchy" || kind === "launch" || kind === "tui" || kind === "") {
+      actionCombo.value = actionCombo.options[0]
+      dispatcherField.text = bind.arg || bind.command || ""
+      paramsField.text = ""
+    } else {
+      actionCombo.value = actionCombo.options[1]
+      dispatcherField.text = bind.command || ""
+      paramsField.text = ""
+    }
+  }
+
+  function deleteBinding(index) {
+    var bind = root.bindings[index]
+    if (!bind) return
+    if (bind.source === "custom") {
+      var newUser = []
+      for (var i3 = 0; i3 < root.userBindings.length; i3++) {
+        var ub = root.userBindings[i3]
+        if (ub.keys === bind.keys && ub.desc === bind.desc) continue
+        newUser.push(ub)
+      }
+      root.userBindings = newUser
+      rebuildBindings()
+      saveConfig()
+    } else {
+      var found = false
+      for (var i4 = 0; i4 < root.userBindings.length; i4++) {
+        if (root.userBindings[i4].keys === bind.keys) { found = true; break }
+      }
+      if (!found) {
+        root.userBindings.push({
+          type: "unbind", keys: bind.keys, desc: "Disable Default", command: ""
+        })
+        rebuildBindings()
+        saveConfig()
+      }
+    }
+  }
+
+  function saveBinding() {
+    var modPrefix = root.capturedMod !== "" ? root.capturedMod + " + " : ""
+    var fullKeys = modPrefix + root.capturedKey
+    if (root.capturedKey === "UNKNOWN" || fullKeys.trim() === "") return
+
+    var isUnbind = actionCombo.value === actionCombo.options[6]
+    if (isUnbind) {
+      addUserBinding({ type: "unbind", keys: fullKeys, desc: descField.text || "Disabled", command: "" })
+      return
+    }
+
+    var cmd = buildCommandString()
+    if (cmd === null) return
+
+    var nb2 = { type: "bind", keys: fullKeys, desc: descField.text || "Custom Binding", command: cmd, source: "custom", kind: "custom" }
+    checkConflicts(fullKeys, nb2)
+  }
+
+  function buildCommandString() {
+    var idx = -1
+    for (var i5 = 0; i5 < actionCombo.options.length; i5++) {
+      if (actionCombo.options[i5] === actionCombo.value) { idx = i5; break }
+    }
+    switch (idx) {
+      case 0: // Open App
+        return dispatcherField.text.trim() || null
+      case 1: // Custom Command
+        return (dispatcherField.text.trim() + " " + paramsField.text.trim()).trim() || null
+      case 2: // Workspace
+        return "workspace " + dispatcherField.text.trim()
+      case 3: // Plugin
+        return dispatcherField.text.trim() || null
+      case 4: // Dispatcher/Lua
+        return dispatcherField.text.trim() || null
+      case 5: // Web App
+        return "omarchy-launch-webapp '" + (dispatcherField.text.trim() || "").replace(/'/g, "'\\''") + "'"
+      case 6: // Unbind
+        return null
+      default:
+        return dispatcherField.text.trim() || null
+    }
+  }
+
+  function checkConflicts(keys, newBind) {
+    root.conflictBindings = []
+    for (var i6 = 0; i6 < root.bindings.length; i6++) {
+      var b = root.bindings[i6]
+      if (b.source === "custom" && b.keys === keys && b.desc !== newBind.desc) {
+        root.conflictBindings.push(b)
+      }
+    }
+    if (root.conflictBindings.length > 0) {
+      root.pendingNewBind = newBind
+      root.showConflictDialog = true
+    } else {
+      addUserBinding(newBind)
+    }
+  }
+
+  property var pendingNewBind: null
+
+  function confirmConflictOverride() {
+    root.showConflictDialog = false
+    var nb = root.pendingNewBind
+    var newUser3 = []
+    for (var i7 = 0; i7 < root.userBindings.length; i7++) {
+      var ub2 = root.userBindings[i7]
+      if (ub2.keys === nb.keys) continue
+      newUser3.push(ub2)
+    }
+    root.userBindings = newUser3
+    root.userBindings.push(nb)
+    rebuildBindings()
+    saveConfig()
+    addDialog.visible = false
+    addDialog.editIndex = -1
+    root.capturedMod = ""
+    root.capturedKey = ""
+  }
+
+  function cancelConflictOverride() {
+    root.showConflictDialog = false
+    root.pendingNewBind = null
+  }
+
+  function addUserBinding(nb) {
+    var newUser4 = []
+    for (var i8 = 0; i8 < root.userBindings.length; i8++) {
+      var ub3 = root.userBindings[i8]
+      if (ub3.keys === nb.keys) continue
+      newUser4.push(ub3)
+    }
+    newUser4.push(nb)
+    root.userBindings = newUser4
+    rebuildBindings()
+    saveConfig()
+    addDialog.visible = false
+    addDialog.editIndex = -1
+    root.capturedMod = ""
+    root.capturedKey = ""
   }
 
   // ----------------------------------------------------------- key capture
+
+  function startCapture() {
+    isCapturing = true
+    capturedMod = ""
+    capturedKey = ""
+    Qt.callLater(function() { captureCatcher.forceActiveFocus() })
+  }
 
   function getKeyString(key) {
     if (key >= Qt.Key_A && key <= Qt.Key_Z) return String.fromCharCode(key).toUpperCase()
@@ -163,48 +514,27 @@ Item {
     if (key >= Qt.Key_F1 && key <= Qt.Key_F35) return "F" + (key - Qt.Key_F1 + 1)
     return "UNKNOWN"
   }
-
-  function startCapture() {
-    isCapturing = true; capturedMod = ""; capturedKey = ""
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
-  }
-
-  function editBinding(index) {
-    var bind = keybinds[index]
-    var arr = bind.keys.split(" + ")
-    capturedKey = arr.pop(); capturedMod = arr.join(" + ")
-    descField.text = bind.desc
-    if (bind.type === "unbind") { actionCombo.value = actionCombo.options[6] }
-    else {
-      var cmd = bind.command.toLowerCase()
-      if (cmd.startsWith("workspace ")) actionCombo.value = actionCombo.options[3]
-      else if (cmd === "killactive") actionCombo.value = actionCombo.options[4]
-      else if (cmd === "reload") actionCombo.value = actionCombo.options[5]
-      else if (cmd.indexOf("omarchy-shell") !== -1) actionCombo.value = actionCombo.options[2]
-      else actionCombo.value = actionCombo.options[1]
-      var parts = bind.command.split(" ")
-      dispatcherField.text = parts.shift() || ""; paramsField.text = parts.join(" ")
-    }
-    addDialog.editIndex = index; addDialog.visible = true
-  }
-
-  function deleteBinding(index) {
-    var binds = [...keybinds]; binds.splice(index, 1); keybinds = binds; saveConfig()
-  }
-
-  function saveBinding() {
-    var modPrefix = capturedMod !== "" ? capturedMod + " + " : ""
-    var fullKeys = modPrefix + capturedKey
-    if (capturedKey === "UNKNOWN" || fullKeys.trim() === "") return
-    var fullCmd = dispatcherField.text.trim() + (paramsField.text.trim() ? " " + paramsField.text.trim() : "")
-    var nb = { type: actionCombo.value === actionCombo.options[6] ? "unbind" : "bind", keys: fullKeys, desc: descField.text || "Custom Binding", command: fullCmd.trim() }
-    var binds = [...keybinds]
-    if (addDialog.editIndex !== -1) binds[addDialog.editIndex] = nb; else binds.push(nb)
-    keybinds = binds; saveConfig()
-    addDialog.visible = false; addDialog.editIndex = -1; capturedMod = ""; capturedKey = ""
-  }
-
   // ------------------------------------------------------------- processes
+
+  Process {
+    id: scannerProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.onScanComplete(text)
+    }
+  }
+
+  Process {
+    id: appScannerProc
+    command: ["sh", "-c", "for d in /usr/share/applications $HOME/.local/share/applications; do ls $d/*.desktop 2>/dev/null | while read f; do cat \"$f\"; echo '---ENTRY---'; done; done"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var entries = String(text || "")
+        root.onAppsScanned(entries)
+      }
+    }
+  }
 
   Process {
     id: reloadProc
@@ -225,7 +555,8 @@ Item {
   }
 
   Timer {
-    id: statusClear; interval: 1800
+    id: statusClear
+    interval: 1800
     running: root.statusText === "Saved"
     onTriggered: root.statusText = ""
   }
@@ -234,8 +565,8 @@ Item {
     id: configFile
     path: root.configPath
     atomicWrites: true; printErrors: false; watchChanges: true
-    onLoaded: root.parseConfig(text())
-    onLoadFailed: { keybinds = [] }
+    onLoaded: { root.scanBindings() }
+    onLoadFailed: {}
     onSaved: root.noteSaved()
     onSaveFailed: root.noteSaveFailed()
     onFileChanged: { if (!root.selfWrite) reload() }
@@ -253,18 +584,14 @@ Item {
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
 
-    Rectangle {
-      anchors.fill: parent; color: root.scrim
-      MouseArea { anchors.fill: parent; onClicked: root.dismiss() }
-    }
+    Rectangle { anchors.fill: parent; color: root.scrim; MouseArea { anchors.fill: parent; onClicked: root.dismiss() } }
 
     BorderSurface {
       id: card
       anchors.centerIn: parent
-      width: Math.min(Style.space(780), window.width - Style.gapsOut * 4)
-      height: Math.min(Style.space(640), window.height - Style.gapsOut * 4)
-      radius: Style.cornerRadius
-      color: root.background
+      width: Math.min(Style.space(860), window.width - Style.gapsOut * 4)
+      height: Math.min(Style.space(700), window.height - Style.gapsOut * 4)
+      radius: Style.cornerRadius; color: root.background
       borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
       padding: Style.spacing.panelPadding
 
@@ -272,99 +599,143 @@ Item {
 
       Item {
         id: keyCatcher
-        anchors.fill: parent; focus: true; visible: !root.isCapturing
-
+        anchors.fill: parent
+        visible: !root.isCapturing && !root.showAppPicker && !root.showConflictDialog
+        focus: true
         Keys.onPressed: function(event) {
           var vim = !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
           if (event.key === Qt.Key_Escape) { root.dismiss(); event.accepted = true }
           else if (event.key === Qt.Key_Down || (vim && event.key === Qt.Key_J)) { bindList.incrementCurrentIndex(); event.accepted = true }
           else if (event.key === Qt.Key_Up || (vim && event.key === Qt.Key_K)) { bindList.decrementCurrentIndex(); event.accepted = true }
-          else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-            if (bindList.currentIndex >= 0 && bindList.currentIndex < keybinds.length) editBinding(bindList.currentIndex)
+          else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            if (bindList.currentIndex >= 0 && bindList.currentIndex < bindList.count) editBinding(bindList.currentIndex)
             event.accepted = true
           }
           else if (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) {
-            if (bindList.currentIndex >= 0 && bindList.currentIndex < keybinds.length) deleteBinding(bindList.currentIndex)
+            if (bindList.currentIndex >= 0 && bindList.currentIndex < bindList.count) deleteBinding(bindList.currentIndex)
             event.accepted = true
           }
         }
       }
 
-      // ---- capture overlay
       Rectangle {
         anchors.fill: parent; visible: root.isCapturing; color: root.background; z: 10
         ColumnLayout {
           anchors.centerIn: parent; spacing: Style.spacing.lg
-          Text { text: "Press a key combination..."; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.heading; Layout.alignment: Qt.AlignHCenter }
-          Text { text: capturedMod !== "" ? capturedMod + " + " + capturedKey : "..."; color: root.accent; font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true; Layout.alignment: Qt.AlignHCenter }
+          Text { text: "Press a key combination... (Esc to cancel)"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.heading; Layout.alignment: Qt.AlignHCenter }
+          Text { text: root.capturedMod !== "" ? root.capturedMod + " + " + root.capturedKey : "..."; color: root.accent; font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true; Layout.alignment: Qt.AlignHCenter }
           Button { text: "Cancel"; Layout.alignment: Qt.AlignHCenter; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: root.isCapturing = false }
         }
-        Keys.onPressed: function(event) {
-          if (event.key === Qt.Key_Escape) { root.isCapturing = false; event.accepted = true; return }
-          if (event.key === Qt.Key_Shift || event.key === Qt.Key_Control || event.key === Qt.Key_Alt || event.key === Qt.Key_Meta || event.key === Qt.Key_AltGr) { event.accepted = true; return }
-          var mods = []
-          if (event.modifiers & Qt.ShiftModifier) mods.push("SHIFT")
-          if (event.modifiers & Qt.ControlModifier) mods.push("CTRL")
-          if (event.modifiers & Qt.AltModifier) mods.push("ALT")
-          if (event.modifiers & Qt.MetaModifier) mods.push("SUPER")
-          capturedMod = mods.join(" + "); capturedKey = getKeyString(event.key); event.accepted = true
+        Item {
+          id: captureCatcher; anchors.fill: parent
+          Keys.onPressed: function(event) {
+            if (event.key === Qt.Key_Escape) { root.isCapturing = false; event.accepted = true; return }
+            if (event.key === Qt.Key_Shift || event.key === Qt.Key_Control || event.key === Qt.Key_Alt || event.key === Qt.Key_Meta || event.key === Qt.Key_AltGr) { event.accepted = true; return }
+            var mods = []
+            if (event.modifiers & Qt.ShiftModifier) mods.push("SHIFT")
+            if (event.modifiers & Qt.ControlModifier) mods.push("CTRL")
+            if (event.modifiers & Qt.AltModifier) mods.push("ALT")
+            if (event.modifiers & Qt.MetaModifier) mods.push("SUPER")
+            root.capturedMod = mods.join(" + "); root.capturedKey = getKeyString(event.key); event.accepted = true
+          }
         }
       }
 
       // ---- main content
       ColumnLayout {
         anchors.fill: parent
-        anchors.topMargin: card.contentTopInset; anchors.rightMargin: card.contentRightInset
-        anchors.bottomMargin: card.contentBottomInset; anchors.leftMargin: card.contentLeftInset
+        anchors.topMargin: card.contentTopInset
+        anchors.rightMargin: card.contentRightInset
+        anchors.bottomMargin: card.contentBottomInset
+        anchors.leftMargin: card.contentLeftInset
         spacing: Style.spacing.panelGap
 
         Item {
-          Layout.fillWidth: true; Layout.preferredHeight: Math.max(titleBlock.implicitHeight, headerActions.implicitHeight)
+          Layout.fillWidth: true
+          Layout.preferredHeight: Math.max(titleBlock.implicitHeight, headerActions.implicitHeight)
+
           Column {
             id: titleBlock
-            anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; spacing: Style.spacing.xxs
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.spacing.xxs
             Text { text: "AuraBind"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.heading; font.bold: true }
-            Text { text: "~/.config/hypr/bindings.lua"; color: Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+            Text { text: root.configPath; color: Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption }
           }
+
           Row {
             id: headerActions
-            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: Style.spacing.lg
-            Text { text: keybinds.length + (keybinds.length === 1 ? " binding" : " bindings"); color: keybinds.length > 0 ? root.accent : Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-            Button { text: "Add"; enabled: !root.isCapturing; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; anchors.verticalCenter: parent.verticalCenter; onClicked: { addDialog.editIndex = -1; capturedMod = ""; capturedKey = ""; descField.text = ""; dispatcherField.text = "exec"; paramsField.text = ""; actionCombo.value = actionCombo.options[0]; addDialog.visible = true } }
-            PanelActionButton { iconText: "X"; tooltipText: "Close - Esc"; foreground: root.foreground; onClicked: root.dismiss() }
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.spacing.lg
+            Text { text: root.bindings.length + (root.bindings.length === 1 ? " binding" : " bindings"); color: root.bindings.length > 0 ? root.accent : Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+            PanelActionButton { iconText: "X"; tooltipText: "Close"; foreground: root.foreground; anchors.verticalCenter: parent.verticalCenter; onClicked: root.dismiss() }
           }
         }
 
         PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
-        TextField { id: searchField; Layout.fillWidth: true; placeholderText: "Search bindings..."; foreground: root.foreground; accent: root.accent }
 
-        ListView {
-          id: bindList; Layout.fillWidth: true; Layout.fillHeight: true; clip: true
-          model: keybinds; spacing: Style.spacing.xs; currentIndex: -1
-          ScrollBar.vertical: ScrollBar {}
-          delegate: Rectangle {
-            width: bindList.width; height: 48; color: Color.menu.selectedBackground; radius: Style.cornerRadius
-            opacity: searchField.text === "" || (modelData.keys + " " + modelData.desc + " " + modelData.command).toLowerCase().indexOf(searchField.text.toLowerCase()) !== -1 ? 1 : 0
-            visible: opacity > 0
-            Behavior on opacity { NumberAnimation { duration: 120 } }
-            RowLayout {
-              anchors.fill: parent; anchors.margins: Style.spacing.md; spacing: Style.spacing.lg
-              Text { text: modelData.keys; color: root.accent; font.family: root.fontFamily; font.bold: true; font.pixelSize: Style.font.subtitle; Layout.preferredWidth: Style.space(140) }
-              Text { text: modelData.desc; color: root.foreground; font.family: root.fontFamily; font.weight: Font.DemiBold; Layout.preferredWidth: Style.space(100); elide: Text.ElideRight }
-              Text { text: modelData.type === "bind" ? modelData.command : "UNBIND"; color: modelData.type === "bind" ? root.foreground : Color.urgent; font.family: root.fontFamily; Layout.fillWidth: true; elide: Text.ElideRight }
-              Button { text: "Edit"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: editBinding(index) }
-              Button { text: "Del"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: deleteBinding(index) }
-            }
+        RowLayout {
+          Layout.fillWidth: true; spacing: Style.spacing.sm
+          TextField { id: searchField; Layout.fillWidth: true; placeholderText: "Search keys, description, or command..."; foreground: root.foreground; accent: root.accent }
+          Dropdown {
+            id: categoryDropdown; Layout.preferredWidth: Style.space(180)
+            foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
+            value: root.categoryFilter; options: root.categories
+            onChanged: function(val) { root.categoryFilter = val }
           }
         }
 
-        // ---- footer
+        ListView {
+          id: bindList
+          Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: Style.spacing.xs; currentIndex: -1
+          ScrollBar.vertical: ScrollBar {}
+          model: root.filteredBindings(searchField.text, root.categoryFilter)
+
+          delegate: Rectangle {
+            width: bindList.width; height: 52
+            color: modelData.source === "custom" ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.08) : Color.menu.selectedBackground
+            radius: Style.cornerRadius
+            border.width: modelData.type === "unbind" ? 1 : 0
+            border.color: modelData.type === "unbind" ? Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.3) : "transparent"
+
+            RowLayout {
+              anchors.fill: parent; anchors.margins: Style.spacing.md; spacing: Style.spacing.sm
+              Column {
+                Layout.preferredWidth: Style.space(160); spacing: 2
+                Text { text: modelData.keys; color: modelData.type === "unbind" ? Color.urgent : root.accent; font.family: root.fontFamily; font.bold: true; font.pixelSize: Style.font.subtitle; elide: Text.ElideRight }
+                Rectangle {
+                  visible: root.categorize(modelData) !== "Other"; height: 16; width: catText.implicitWidth + 6; radius: 3
+                  color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
+                  Text { id: catText; anchors.centerIn: parent; text: root.categorize(modelData); color: Qt.darker(root.foreground, 1.5); font.pixelSize: 9; font.family: root.fontFamily }
+                }
+              }
+              Column { Layout.fillWidth: true; Layout.preferredWidth: Style.space(120); spacing: 2
+                Text { text: modelData.desc; color: modelData.source === "custom" ? root.accent : root.foreground; font.family: root.fontFamily; font.weight: modelData.source === "custom" ? Font.Bold : Font.DemiBold; font.pixelSize: Style.font.body; elide: Text.ElideRight }
+                Text { text: modelData.source === "custom" ? "Custom" : ""; color: Qt.darker(root.accent, 1.2); font.family: root.fontFamily; font.pixelSize: 9; visible: modelData.source === "custom" }
+              }
+              Text { Layout.fillWidth: true; text: modelData.type === "unbind" ? "Disabled" : modelData.command; color: modelData.type === "unbind" ? Color.urgent : Qt.darker(root.foreground, 1.3); font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.WordWrap }
+              Button { text: "Edit"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: editBinding(index) }
+              Button { text: modelData.source === "custom" ? "Del" : "Unbind"; foreground: root.foreground; accent: Color.urgent; fontFamily: root.fontFamily; onClicked: deleteBinding(index) }
+            }
+          }
+
+          Rectangle {
+            anchors.centerIn: parent; visible: bindList.count === 0; width: parent.width; height: 100; color: "transparent"
+            Text { anchors.centerIn: parent; text: searchField.text ? 'No bindings found' : "Press + Add Binding"; color: Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+          }
+        }
+
         Item {
           Layout.fillWidth: true; Layout.preferredHeight: footerText.implicitHeight + Style.spacing.md
+          Button {
+            id: addButton; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+            text: "+ Add Binding"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; enabled: !root.isCapturing
+            onClicked: { addDialog.editIndex = -1; root.capturedMod = ""; root.capturedKey = ""; descField.text = ""; dispatcherField.text = ""; paramsField.text = ""; paramsField.visible = false; paramsLabel.visible = false; appPickerButton.visible = true; actionCombo.value = actionCombo.options[0]; addDialog.visible = true }
+          }
           Text {
-            id: footerText
-            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-            text: { if (root.errorText !== "") return root.errorText; if (root.statusText !== "") return root.statusText; return "Up/Down navigate - Enter edit - Delete remove - Esc close" }
+            id: footerText; anchors.left: addButton.right; anchors.leftMargin: Style.spacing.lg; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+            text: { if (root.errorText !== "") return "Error: " + root.errorText; if (root.statusText !== "") return root.statusText; return "Up/Down or J/K  Enter edit  Del disable  Esc close  Filter by search & category" }
             color: root.errorText !== "" ? Color.urgent : Qt.darker(root.foreground, 1.6)
             font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.WordWrap
           }
@@ -382,56 +753,156 @@ Item {
       BorderSurface {
         id: dialogCard
         anchors.centerIn: parent
-        width: Math.min(Style.space(440), parent.width - Style.gapsOut * 4)
-        height: Math.min(Style.space(520), parent.height - Style.gapsOut * 4)
+        width: Math.min(Style.space(500), parent.width - Style.gapsOut * 4)
+        height: Math.min(Style.space(620), parent.height - Style.gapsOut * 4)
         radius: Style.cornerRadius; color: root.background
         borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
         padding: Style.spacing.panelPadding
 
         ColumnLayout {
           anchors.fill: parent; spacing: Style.spacing.panelGap
+
           Text { text: addDialog.editIndex === -1 ? "Add Binding" : "Edit Binding"; font.pixelSize: Style.font.heading; font.bold: true; color: root.foreground; Layout.alignment: Qt.AlignHCenter }
+
           Text { text: "Key Combination"; color: root.foreground }
-          Button {
-            Layout.fillWidth: true
-            text: isCapturing ? "Capturing..." : ((capturedMod !== "" ? capturedMod + " + " : "") + capturedKey || "Click to capture...")
-            foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
-            onClicked: startCapture()
-          }
+          Button { Layout.fillWidth: true; text: root.isCapturing ? "Capturing..." : ((root.capturedMod !== "" ? root.capturedMod + " + " : "") + root.capturedKey || "Click to capture..."); foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: startCapture() }
+
           Text { text: "Description"; color: root.foreground }
           TextField { id: descField; Layout.fillWidth: true; placeholderText: "e.g. Open Terminal"; foreground: root.foreground; accent: root.accent }
+
           Text { text: "Action Type"; color: root.foreground }
-          Dropdown {
-            id: actionCombo; Layout.fillWidth: true; label: ""
-            foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
-            options: ["Open App", "Custom Command", "Start Plugin", "Workspace", "Kill Active", "Reload", "Unbind (Disable Default)"]
-            value: options[0]
-            onChanged: function(val) {
-              var opts = actionCombo.options
-              var idx = -1
-              for (var i = 0; i < opts.length; i++) { if (opts[i] === val) { idx = i; break } }
-              dispatcherField.enabled = idx !== 4 && idx !== 5 && idx !== 6
-              paramsField.enabled = dispatcherField.enabled
-              if (idx === 0) { dispatcherField.text = "exec"; paramsField.placeholderText = "e.g. kitty" }
-              else if (idx === 1) { dispatcherField.text = ""; paramsField.placeholderText = "e.g. alacritty -e ssh" }
-              else if (idx === 2) { dispatcherField.text = "exec"; paramsField.placeholderText = "e.g. omarchy-shell shell toggle" }
-              else if (idx === 3) { dispatcherField.text = "workspace"; paramsField.placeholderText = "e.g. 1" }
-              else if (idx === 4) { dispatcherField.text = "killactive"; paramsField.text = "" }
-              else if (idx === 5) { dispatcherField.text = "reload"; paramsField.text = "" }
-              else if (idx === 6) { dispatcherField.text = ""; paramsField.text = "" }
+          RowLayout {
+            Layout.fillWidth: true; spacing: Style.spacing.sm
+            Dropdown {
+              id: actionCombo; Layout.fillWidth: true; label: ""
+              foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
+              options: ["Open App", "Custom Command", "Workspace", "Plugin / Shell", "Dispatcher / Lua", "Web App", "Unbind (Disable Default)"]
+              value: options[0]
+              onChanged: function(val) {
+                var opts2 = actionCombo.options; var idx2 = -1
+                for (var i2 = 0; i2 < opts2.length; i2++) { if (opts2[i2] === val) { idx2 = i2; break } }
+                var isDisabled = idx2 === 6
+                dispatcherField.enabled = !isDisabled; appPickerButton.visible = idx2 === 0
+                dispatcherLabel.visible = !isDisabled; dispatcherField.visible = !isDisabled
+                paramsLabel.visible = idx2 === 1; paramsField.visible = idx2 === 1
+                if (idx2 === 0) { dispatcherField.placeholderText = "e.g. kitty or firefox" }
+                else if (idx2 === 1) { dispatcherField.placeholderText = "Full command" }
+                else if (idx2 === 2) { dispatcherField.placeholderText = "e.g. 1 or 2" }
+                else if (idx2 === 3) { dispatcherField.placeholderText = "e.g. omarchy.shell toggle" }
+                else if (idx2 === 4) { dispatcherField.placeholderText = "e.g. hl.dsp.window.close()" }
+                else if (idx2 === 5) { dispatcherField.placeholderText = "e.g. https://app.example.com" }
+                else if (idx2 === 6) { dispatcherField.text = ""; paramsField.text = "" }
+              }
+            }
+            Button {
+              id: appPickerButton
+              visible: actionCombo.value === actionCombo.options[0]
+              text: "Browse Apps"
+              foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
+              onClicked: { showAppPicker = true; appPickTarget = "dispatcher"; appSearchField.text = ""; Qt.callLater(function() { appSearchField.forceActiveFocus() }) }
             }
           }
-          Text { text: "Dispatcher"; color: root.foreground }
-          TextField { id: dispatcherField; Layout.fillWidth: true; foreground: root.foreground; accent: root.accent }
-          Text { text: "Parameters"; color: root.foreground }
-          TextField { id: paramsField; Layout.fillWidth: true; foreground: root.foreground; accent: root.accent }
+
+          Text { id: dispatcherLabel; text: "Command / Dispatcher"; color: root.foreground }
+          TextField { id: dispatcherField; Layout.fillWidth: true; placeholderText: "e.g. kitty or firefox"; foreground: root.foreground; accent: root.accent }
+
+          Text { id: paramsLabel; visible: false; text: "Arguments"; color: root.foreground }
+          TextField { id: paramsField; Layout.fillWidth: true; visible: false; placeholderText: "e.g. --new-window"; foreground: root.foreground; accent: root.accent }
+
           RowLayout {
-            Layout.fillWidth: true
-            Layout.topMargin: Style.spacing.md
+            Layout.fillWidth: true; Layout.topMargin: Style.spacing.md
             Item { Layout.fillWidth: true }
-            Button { text: "Cancel"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: { addDialog.visible = false; addDialog.editIndex = -1 } }
+            Button { text: "Cancel"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: { addDialog.visible = false; addDialog.editIndex = -1; root.isCapturing = false } }
             Button { text: "Save"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: saveBinding() }
           }
+        }
+      }
+    }
+  }
+
+  // ---- app picker overlay
+  Rectangle {
+    id: appPicker
+    visible: root.showAppPicker
+    anchors.fill: parent; color: Qt.rgba(0,0,0,0.5); z: 200
+    MouseArea { anchors.fill: parent; onClicked: {} }
+
+    BorderSurface {
+      anchors.centerIn: parent
+      width: Math.min(Style.space(480), parent.width - Style.gapsOut * 4)
+      height: Math.min(Style.space(500), parent.height - Style.gapsOut * 4)
+      radius: Style.cornerRadius; color: root.background
+      borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
+      padding: Style.spacing.panelPadding
+
+      ColumnLayout {
+        anchors.fill: parent; spacing: Style.spacing.panelGap
+
+        Text { text: "Browse Applications"; font.pixelSize: Style.font.heading; font.bold: true; color: root.foreground; Layout.alignment: Qt.AlignHCenter }
+        TextField { id: appSearchField; Layout.fillWidth: true; placeholderText: "Search apps..."; foreground: root.foreground; accent: root.accent }
+
+        ListView {
+          Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: Style.spacing.xs
+          ScrollBar.vertical: ScrollBar {}
+          model: {
+            var q = (appSearchField.text || "").toLowerCase(); var out = []
+            for (var i = 0; i < root.installedApps.length; i++) {
+              var a = root.installedApps[i]
+              if (q === "" || (a.name.toLowerCase().indexOf(q) !== -1) || (a.exec.toLowerCase().indexOf(q) !== -1)) out.push(a)
+            }
+            return out
+          }
+          delegate: Rectangle {
+            width: parent.width; height: 42; color: Color.menu.selectedBackground; radius: Style.cornerRadius
+            MouseArea {
+              anchors.fill: parent
+              onClicked: { dispatcherField.text = modelData.exec; root.showAppPicker = false }
+            }
+            RowLayout {
+              anchors.fill: parent; anchors.margins: Style.spacing.md; spacing: Style.spacing.sm
+              Rectangle {
+                width: 32; height: 32; radius: 4; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
+                Text { anchors.centerIn: parent; text: modelData.name.charAt(0).toUpperCase(); color: root.accent; font.family: root.fontFamily; font.bold: true; font.pixelSize: Style.font.subtitle }
+              }
+              Column {
+                Layout.fillWidth: true; spacing: 2
+                Text { text: modelData.name; color: root.foreground; font.family: root.fontFamily; font.weight: Font.DemiBold; font.pixelSize: Style.font.body; elide: Text.ElideRight }
+                Text { text: modelData.comment || modelData.exec; color: Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption; elide: Text.ElideRight }
+              }
+            }
+          }
+        }
+
+        Button { Layout.alignment: Qt.AlignHCenter; text: "Cancel"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: root.showAppPicker = false }
+      }
+    }
+  }
+
+  // ---- conflict dialog overlay
+  Rectangle {
+    id: conflictDialog
+    visible: root.showConflictDialog
+    anchors.fill: parent; color: Qt.rgba(0,0,0,0.5); z: 200
+    MouseArea { anchors.fill: parent; onClicked: {} }
+
+    BorderSurface {
+      anchors.centerIn: parent
+      width: Math.min(Style.space(400), parent.width - Style.gapsOut * 4)
+      height: Math.min(Style.space(220), parent.height - Style.gapsOut * 4)
+      radius: Style.cornerRadius; color: root.background
+      borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
+      padding: Style.spacing.panelPadding
+
+      ColumnLayout {
+        anchors.fill: parent; spacing: Style.spacing.panelGap
+        Text { text: "Key Conflict"; font.pixelSize: Style.font.heading; font.bold: true; color: Color.urgent; Layout.alignment: Qt.AlignHCenter }
+        Text { text: "This key combination is already used by another custom binding. Override it?"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; wrapMode: Text.WordWrap }
+        Text { text: "Existing: " + (root.conflictBindings.length > 0 ? root.conflictBindings[0].desc : "unknown"); color: Qt.darker(root.foreground, 1.5); font.family: root.fontFamily; font.pixelSize: Style.font.caption; wrapMode: Text.WordWrap }
+        RowLayout {
+          Layout.fillWidth: true; Layout.topMargin: Style.spacing.md
+          Item { Layout.fillWidth: true }
+          Button { text: "Cancel"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; onClicked: { root.showConflictDialog = false; root.pendingNewBind = null } }
+          Button { text: "Override"; foreground: root.foreground; accent: Color.urgent; fontFamily: root.fontFamily; onClicked: root.confirmConflictOverride() }
         }
       }
     }
