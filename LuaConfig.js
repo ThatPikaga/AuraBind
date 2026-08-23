@@ -161,11 +161,12 @@ function parseDesktopEntries(text) {
   // Split by entry markers
   var blocks = String(text).split("---ENTRY---")
   for (var bi = 0; bi < blocks.length; bi++) {
-    var block = blocks[bi]
+    var block = blocks[bi].trim()
+    if (!block) continue
     var lines = block.split("\n")
     var current = null
     for (var i = 0; i < lines.length; i++) {
-      var line = lines[i]
+      var line = lines[i].trim()
       if (line.match(/^\[Desktop Entry\]/)) {
         if (current) entries.push(current)
         current = { name: "", exec: "", icon: "", categories: "", comment: "" }

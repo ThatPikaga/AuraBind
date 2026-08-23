@@ -32,6 +32,8 @@ Item {
   property string capturedKey: ""
   property string errorText: ""
   property string statusText: ""
+  property int selectedActionIndex: 0
+  property int bindingsRevision: 0
 
   property color background: Color.menu.background
   property color foreground: Color.menu.text
@@ -89,8 +91,11 @@ Item {
     root.opened = true
     errorText = ""
     statusText = ""
-    configFile.reload()
     loadApps()
+    scanBindings()
+    // Also force-read from config file directly in case FileView.onLoaded
+    // doesn't fire on reload
+    configFile.reload()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -126,8 +131,28 @@ Item {
 
   function scanBindings() {
     var luaPath = root.pluginDir + "/read.lua"
-    scannerProc.command = ["lua", luaPath]
+    var oPath = root.omarchyPath || ""
+    var envPrefix = oPath ? "OMARCHY_PATH=" + oPath + " " : ""
+    scannerProc.command = ["sh", "-c", envPrefix + "lua '" + luaPath.replace(/'/g, "'\\''") + "'"]
     scannerProc.running = true
+  }
+
+  function updateActionFields() {
+    var idx2 = root.selectedActionIndex
+    var isDisabled = idx2 === 6
+    dispatcherField.enabled = !isDisabled
+    paramsField.enabled = idx2 === 1
+    dispatcherLabel.visible = !isDisabled
+    dispatcherField.visible = !isDisabled
+    paramsLabel.visible = idx2 === 1
+    paramsField.visible = idx2 === 1
+    if (idx2 === 0) dispatcherField.placeholderText = "e.g. kitty or firefox"
+    else if (idx2 === 1) dispatcherField.placeholderText = "Full command"
+    else if (idx2 === 2) dispatcherField.placeholderText = "e.g. 1 or 2"
+    else if (idx2 === 3) dispatcherField.placeholderText = "e.g. omarchy.shell toggle"
+    else if (idx2 === 4) dispatcherField.placeholderText = "e.g. hl.dsp.window.close()"
+    else if (idx2 === 5) dispatcherField.placeholderText = "e.g. https://app.example.com"
+    else if (idx2 === 6) { dispatcherField.text = ""; paramsField.text = "" }
   }
 
   function onScanComplete(text) {
@@ -171,6 +196,7 @@ Item {
 
     root.bindings = merged
     root.userBindings = managed
+    root.bindingsRevision += 1
     statusClear.restart()
   }
 
@@ -190,7 +216,7 @@ Item {
     return "Other"
   }
 
-  function filteredBindings(search, category) {
+  function filteredBindings(search, category, revision) {
     var out = []
     for (var i = 0; i < root.bindings.length; i++) {
       var b = root.bindings[i]
@@ -277,6 +303,7 @@ Item {
       all.push(root.userBindings[j])
     }
     root.bindings = all
+    root.bindingsRevision += 1
   }
 
   // ------------------------------------------------------- conflict detection
@@ -316,7 +343,7 @@ Item {
 
   function setActionFromBinding(bind) {
     if (bind.type === "unbind") {
-      actionCombo.value = actionCombo.options[6]
+      root.selectedActionIndex = 6
       dispatcherField.enabled = false
       paramsField.enabled = false
       dispatcherField.text = ""
@@ -328,27 +355,27 @@ Item {
     var cmd = (bind.command || "").toLowerCase()
     var kind = bind.kind || ""
     if (kind === "lua" || kind === "menu" || kind === "toggle" || kind === "plugin") {
-      actionCombo.value = actionCombo.options[4]
+      root.selectedActionIndex = 4
       dispatcherField.text = bind.command || ""
       paramsField.text = ""
     } else if (kind === "webapp") {
-      actionCombo.value = actionCombo.options[5]
+      root.selectedActionIndex = 5
       dispatcherField.text = bind.arg || ""
       paramsField.text = ""
     } else if (cmd.indexOf("workspace ") === 0) {
-      actionCombo.value = actionCombo.options[2]
+      root.selectedActionIndex = 2
       dispatcherField.text = bind.command.replace(/^workspace\s+/, "")
       paramsField.text = ""
     } else if (cmd === "killactive" || cmd === "reload") {
-      actionCombo.value = actionCombo.options[1]
+      root.selectedActionIndex = 1
       dispatcherField.text = bind.command || ""
       paramsField.text = ""
     } else if (kind === "omarchy" || kind === "launch" || kind === "tui" || kind === "") {
-      actionCombo.value = actionCombo.options[0]
+      root.selectedActionIndex = 0
       dispatcherField.text = bind.arg || bind.command || ""
       paramsField.text = ""
     } else {
-      actionCombo.value = actionCombo.options[1]
+      root.selectedActionIndex = 1
       dispatcherField.text = bind.command || ""
       paramsField.text = ""
     }
@@ -387,8 +414,7 @@ Item {
     var fullKeys = modPrefix + root.capturedKey
     if (root.capturedKey === "UNKNOWN" || fullKeys.trim() === "") return
 
-    var isUnbind = actionCombo.value === actionCombo.options[6]
-    if (isUnbind) {
+    if (root.selectedActionIndex === 6) {
       addUserBinding({ type: "unbind", keys: fullKeys, desc: descField.text || "Disabled", command: "" })
       return
     }
@@ -401,10 +427,8 @@ Item {
   }
 
   function buildCommandString() {
-    var idx = -1
-    for (var i5 = 0; i5 < actionCombo.options.length; i5++) {
-      if (actionCombo.options[i5] === actionCombo.value) { idx = i5; break }
-    }
+    var idx = root.selectedActionIndex
+    if (idx < 0 || idx > 6) return null
     switch (idx) {
       case 0: // Open App
         return dispatcherField.text.trim() || null
@@ -518,11 +542,13 @@ Item {
 
   Process {
     id: scannerProc
+    // command set dynamically in scanBindings()
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onScanComplete(text)
     }
   }
+
 
   Process {
     id: appScannerProc
@@ -668,7 +694,7 @@ Item {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.spacing.lg
-            Text { text: root.bindings.length + (root.bindings.length === 1 ? " binding" : " bindings"); color: root.bindings.length > 0 ? root.accent : Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+            Text { text: root.bindings.length + (root.bindings.length === 1 ? " binding" : " bindings") + " (" + root.bindingsRevision + ")"; color: root.bindings.length > 0 ? root.accent : Qt.darker(root.foreground, 1.6); font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
             PanelActionButton { iconText: "X"; tooltipText: "Close"; foreground: root.foreground; anchors.verticalCenter: parent.verticalCenter; onClicked: root.dismiss() }
           }
         }
@@ -690,7 +716,7 @@ Item {
           id: bindList
           Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: Style.spacing.xs; currentIndex: -1
           ScrollBar.vertical: ScrollBar {}
-          model: root.filteredBindings(searchField.text, root.categoryFilter)
+          model: root.filteredBindings(searchField.text, root.categoryFilter, root.bindingsRevision)
 
           delegate: Rectangle {
             width: bindList.width; height: 52
@@ -731,7 +757,7 @@ Item {
           Button {
             id: addButton; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
             text: "+ Add Binding"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily; enabled: !root.isCapturing
-            onClicked: { addDialog.editIndex = -1; root.capturedMod = ""; root.capturedKey = ""; descField.text = ""; dispatcherField.text = ""; paramsField.text = ""; paramsField.visible = false; paramsLabel.visible = false; appPickerButton.visible = true; actionCombo.value = actionCombo.options[0]; addDialog.visible = true }
+            onClicked: { addDialog.editIndex = -1; root.capturedMod = ""; root.capturedKey = ""; descField.text = ""; dispatcherField.text = ""; paramsField.text = ""; paramsField.visible = false; paramsLabel.visible = false; root.selectedActionIndex = 0; addDialog.visible = true }
           }
           Text {
             id: footerText; anchors.left: addButton.right; anchors.leftMargin: Style.spacing.lg; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
@@ -771,34 +797,47 @@ Item {
           TextField { id: descField; Layout.fillWidth: true; placeholderText: "e.g. Open Terminal"; foreground: root.foreground; accent: root.accent }
 
           Text { text: "Action Type"; color: root.foreground }
-          RowLayout {
-            Layout.fillWidth: true; spacing: Style.spacing.sm
-            Dropdown {
-              id: actionCombo; Layout.fillWidth: true; label: ""
-              foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
-              options: ["Open App", "Custom Command", "Workspace", "Plugin / Shell", "Dispatcher / Lua", "Web App", "Unbind (Disable Default)"]
-              value: options[0]
-              onChanged: function(val) {
-                var opts2 = actionCombo.options; var idx2 = -1
-                for (var i2 = 0; i2 < opts2.length; i2++) { if (opts2[i2] === val) { idx2 = i2; break } }
-                var isDisabled = idx2 === 6
-                dispatcherField.enabled = !isDisabled; appPickerButton.visible = idx2 === 0
-                dispatcherLabel.visible = !isDisabled; dispatcherField.visible = !isDisabled
-                paramsLabel.visible = idx2 === 1; paramsField.visible = idx2 === 1
-                if (idx2 === 0) { dispatcherField.placeholderText = "e.g. kitty or firefox" }
-                else if (idx2 === 1) { dispatcherField.placeholderText = "Full command" }
-                else if (idx2 === 2) { dispatcherField.placeholderText = "e.g. 1 or 2" }
-                else if (idx2 === 3) { dispatcherField.placeholderText = "e.g. omarchy.shell toggle" }
-                else if (idx2 === 4) { dispatcherField.placeholderText = "e.g. hl.dsp.window.close()" }
-                else if (idx2 === 5) { dispatcherField.placeholderText = "e.g. https://app.example.com" }
-                else if (idx2 === 6) { dispatcherField.text = ""; paramsField.text = "" }
-              }
+          Flow {
+            Layout.fillWidth: true; spacing: Style.spacing.xxs
+            Button {
+              id: openAppBtn; text: "Open App"; checked: root.selectedActionIndex === 0
+              checkable: true; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
+              onClicked: { root.selectedActionIndex = 0; updateActionFields() }
+            }
+            Button {
+              id: customCmdBtn; text: "Custom Cmd"; checked: root.selectedActionIndex === 1
+              checkable: true; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
+              onClicked: { root.selectedActionIndex = 1; updateActionFields() }
+            }
+            Button {
+              id: workspaceBtn; text: "Workspace"; checked: root.selectedActionIndex === 2
+              checkable: true; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
+              onClicked: { root.selectedActionIndex = 2; updateActionFields() }
+            }
+            Button {
+              id: pluginBtn; text: "Plugin"; checked: root.selectedActionIndex === 3
+              checkable: true; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
+              onClicked: { root.selectedActionIndex = 3; updateActionFields() }
+            }
+            Button {
+              id: dispatcherBtn; text: "Lua/Disp"; checked: root.selectedActionIndex === 4
+              checkable: true; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
+              onClicked: { root.selectedActionIndex = 4; updateActionFields() }
+            }
+            Button {
+              id: webAppBtn; text: "Web App"; checked: root.selectedActionIndex === 5
+              checkable: true; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
+              onClicked: { root.selectedActionIndex = 5; updateActionFields() }
+            }
+            Button {
+              id: unbindBtn; text: "Unbind"; checked: root.selectedActionIndex === 6
+              checkable: true; foreground: root.foreground; accent: Color.urgent; fontFamily: root.fontFamily
+              onClicked: { root.selectedActionIndex = 6; updateActionFields() }
             }
             Button {
               id: appPickerButton
-              visible: actionCombo.value === actionCombo.options[0]
-              text: "Browse Apps"
-              foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
+              text: "Browse Apps"; foreground: root.foreground; accent: root.accent; fontFamily: root.fontFamily
+              visible: root.selectedActionIndex === 0
               onClicked: { showAppPicker = true; appPickTarget = "dispatcher"; appSearchField.text = ""; Qt.callLater(function() { appSearchField.forceActiveFocus() }) }
             }
           }
@@ -905,6 +944,19 @@ Item {
           Button { text: "Override"; foreground: root.foreground; accent: Color.urgent; fontFamily: root.fontFamily; onClicked: root.confirmConflictOverride() }
         }
       }
+    }
+  }
+
+  // Run initial scan once the component is ready.
+  // This ensures bindings load even if the panel opens before FileView fires.
+  Timer {
+    id: startupTimer
+    interval: 100
+    running: true
+    repeat: false
+    onTriggered: {
+      scanBindings()
+      loadApps()
     }
   }
 
