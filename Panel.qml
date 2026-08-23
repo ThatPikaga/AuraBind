@@ -615,7 +615,7 @@ Item {
 
   Process {
     id: appScannerProc
-    command: ["sh", "-c", "for d in /usr/share/applications $HOME/.local/share/applications /var/lib/flatpak/exports/share/applications; do ls $d/*.desktop 2>/dev/null | while read f; do cat "$f"; echo '---ENTRY---'; done; done"]
+    command: ["python3", home + "/.config/omarchy/plugins/pikaga.aurabind/scan_apps.py"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -626,7 +626,7 @@ Item {
 
   Process {
     id: flatpakProc
-    command: ["sh", "-c", "flatpak list --app 2>/dev/null | awk -F'\t' '{print $2 "\t" $1}'"]
+    command: ["python3", home + "/.config/omarchy/plugins/pikaga.aurabind/scan_flatpak.py"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -637,16 +637,7 @@ Item {
 
   Process {
     id: pluginScannerProc
-    command: ["sh", "-c", "shopt -s nullglob; for d in $HOME/.config/omarchy/plugins/*/ /usr/share/omarchy/plugins/*/; do
-      name=$(basename "$d")
-      meta="$d/manifest.json"
-      if [ -f "$meta" ]; then
-        display=$(python3 -c "import json,sys; print(json.load(open('$meta')).get('name',''))" 2>/dev/null || echo "$name")
-      else
-        display="$name"
-      fi
-      echo "$name|$display"
-    done"]
+    command: ["python3", home + "/.config/omarchy/plugins/pikaga.aurabind/scan_plugins.py"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -717,7 +708,8 @@ Item {
   PanelWindow {
     id: window
     visible: root.opened
-    anchors.fill: parent
+    width: parent ? parent.width : 0
+    height: parent ? parent.height : 0
     color: "transparent"
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.namespace: "aurabind"
@@ -1131,36 +1123,24 @@ Item {
             text: "SUPER"
             checked: root.keyModSuper
             onCheckedChanged: root.keyModSuper = checked
-            foreground: root.foreground
-            accent: root.accent
-            fontFamily: root.fontFamily
           }
           CheckBox {
             id: modAlt
             text: "ALT"
             checked: root.keyModAlt
             onCheckedChanged: root.keyModAlt = checked
-            foreground: root.foreground
-            accent: root.accent
-            fontFamily: root.fontFamily
           }
           CheckBox {
             id: modCtrl
             text: "CTRL"
             checked: root.keyModCtrl
             onCheckedChanged: root.keyModCtrl = checked
-            foreground: root.foreground
-            accent: root.accent
-            fontFamily: root.fontFamily
           }
           CheckBox {
             id: modShift
             text: "SHIFT"
             checked: root.keyModShift
             onCheckedChanged: root.keyModShift = checked
-            foreground: root.foreground
-            accent: root.accent
-            fontFamily: root.fontFamily
           }
         }
 
@@ -1184,9 +1164,6 @@ Item {
             }
             root.keyComboKeys = arr
           }
-          foreground: root.foreground
-          accent: root.accent
-          fontFamily: root.fontFamily
         }
 
         // ---- Step 3: Key combo selectors (Repeater)
@@ -1217,9 +1194,6 @@ Item {
               arr[index] = currentText
               root.keyComboKeys = arr
             }
-            foreground: root.foreground
-            accent: root.accent
-            fontFamily: root.fontFamily
           }
         }
 
