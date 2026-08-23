@@ -1228,7 +1228,7 @@ Item {
           Layout.fillWidth: true
           placeholderText: "e.g. Open Browser"
           foreground: root.foreground
-          fontFamily: root.fontFamily
+          font.family: root.fontFamily
         }
 
         // ---- Step 5: Action type grid
@@ -1299,7 +1299,7 @@ Item {
               placeholderText: "Search installed apps..."
               foreground: root.foreground
               accent: root.accent
-              fontFamily: root.fontFamily
+              font.family: root.fontFamily
             }
 
             ListView {
@@ -1380,7 +1380,7 @@ Item {
             return ""
           }
           foreground: root.foreground
-          fontFamily: root.fontFamily
+          font.family: root.fontFamily
         }
 
         // Action 2: Kill Active Window - explanatory text

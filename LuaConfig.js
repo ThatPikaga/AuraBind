@@ -101,7 +101,10 @@ function renderBindingLine(binding, actionHint) {
   }
   var at = actionHint !== undefined ? actionHint : (binding.actionType !== undefined ? binding.actionType : 1)
   var cmd = renderCmd(binding, at)
-  var bindLine = 'o.bind("' + esc(binding.keys) + '", "' + esc(binding.desc) + '", "' + esc(cmd) + '")'
+  var isLua = at === 4 || (binding.kind === "lua")
+  var bindLine = isLua
+    ? 'o.bind("' + esc(binding.keys) + '", "' + esc(binding.desc) + '", ' + cmd + ')'
+    : 'o.bind("' + esc(binding.keys) + '", "' + esc(binding.desc) + '", "' + esc(cmd) + '")'
   if (at >= 0) {
     return [makeActionHint(at), bindLine]
   }

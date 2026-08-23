@@ -106,9 +106,19 @@ local function make_stub_env(bindings)
         return dsp_proxy(self.path .. "." .. tostring(key))
       end,
       __call = function(self, ...)
+        local function serialize(val)
+          if type(val) == "table" then
+            local pairsStr = {}
+            for k, v in pairs(val) do
+              pairsStr[#pairsStr + 1] = tostring(k) .. " = " .. serialize(v)
+            end
+            return "{" .. table.concat(pairsStr, ", ") .. "}"
+          end
+          return tostring(val)
+        end
         local parts = {}
         for i = 1, select("#", ...) do
-          parts[i] = tostring(select(i, ...))
+          parts[i] = serialize(select(i, ...))
         end
         return { __omarchy_dispatcher = true, kind = "lua", arg = self.path .. "(" .. table.concat(parts, ", ") .. ")" }
       end,
