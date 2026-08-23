@@ -5,6 +5,13 @@
 // Renders and parses the managed block inside ~/.config/hypr/bindings.lua.
 // The block contains o.bind() and hl.unbind() calls that AuraBind owns.
 // Whatever is outside the fences is left untouched.
+//
+// The block lines are one of:
+//   o.bind("KEYS", "DESC", "COMMAND")
+//   o.bind("KEYS", "DESC", hl.dsp...())          -- Lua dispatcher as raw code
+//   hl.unbind("KEYS")
+//
+// parseBindings reads tab-separated records from read.lua's stdout.
 
 var BEGIN_FENCE = "-- >>> aurabind managed keybindings block >>>"
 var END_FENCE = "-- <<< aurabind managed keybindings block <<<"
@@ -55,23 +62,74 @@ function renderBlock(body) {
   return header + body + "\n" + END_FENCE
 }
 
-function renderBody(bindings) {
-  var lines = []
-  for (var i = 0; i < bindings.length; i++) {
-    var b = bindings[i]
-    if (b.type === "bind") {
-      var keys = b.keys.replace(/"/g, '\\"')
-      var desc = b.desc.replace(/"/g, '\\"')
-      var cmd = b.command.replace(/"/g, '\\"')
-      lines.push('o.bind("' + keys + '", "' + desc + '", "' + cmd + '")')
-    } else if (b.type === "unbind") {
-      lines.push('hl.unbind("' + b.keys + '")')
+// ----------------------------------------------------------------- parse managed block
+
+// Parse a single managed-block line into a binding object.
+// Handles:
+//   o.bind("KEYS", "DESC", "PLAIN_COMMAND")
+//   o.bind("KEYS", "DESC", hl.dsp...())       -- Lua dispatcher
+//   hl.unbind("KEYS")
+function parseManagedLine(line) {
+  var s = line.trim()
+  if (s === "" || s.startsWith("--")) return null
+
+  // hl.unbind("KEYS")
+  var m = s.match(/^hl\.unbind\("([^"]+)"\)$/)
+  if (m) {
+    return {
+      type: "unbind",
+      keys: m[1],
+      desc: "Disable Default",
+      command: "",
+      source: "custom"
     }
   }
-  return lines.join("\n")
+
+  // o.bind("KEYS", "DESC", "COMMAND_OR_DSP")
+  // The third argument can be a quoted string or a hl.dsp expression.
+  // Try the plain quoted-string form first.
+  m = s.match(/^o\.bind\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\)$/)
+  if (m) {
+    return {
+      type: "bind",
+      keys: m[1],
+      desc: m[2] || "",
+      command: m[3] || "",
+      source: "custom",
+      kind: detectStoredKind(m[3] || "")
+    }
+  }
+
+  // Try the Lua-dispatcher form: o.bind("KEYS", "DESC", hl.dsp...())
+  m = s.match(/^o\.bind\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*(.+)\)\s*$/)
+  if (m) {
+    return {
+      type: "bind",
+      keys: m[1],
+      desc: m[2] || "",
+      command: m[3] || "",
+      source: "custom",
+      kind: "lua"
+    }
+  }
+
+  return null
 }
 
-// ---------------------------------------------------------------- parse
+function detectStoredKind(command) {
+  if (!command) return "exec"
+  if (command.indexOf("omarchy-launch-webapp") >= 0) return "webapp"
+  if (command.indexOf("omarchy-launch-") >= 0) return "omarchy"
+  if (command.indexOf("omarchy-shell shell toggle ") >= 0) return "plugin"
+  if (command.indexOf("omarchy-menu") >= 0) return "menu"
+  if (command.indexOf("omarchy-toggle-") >= 0) return "toggle"
+  if (command.indexOf("hl.dsp") >= 0 || command.indexOf("hl.dispatch") >= 0) return "lua"
+  if (command.indexOf("uwsm-app") >= 0) return "launch"
+  if (command.indexOf("omarchy-launch-or-focus") >= 0) return "launch"
+  return "exec"
+}
+
+// ----------------------------------------------------------------- parse scanner output
 
 function parseBindings(records) {
   // Parse tab-separated records from read.lua
@@ -86,7 +144,6 @@ function parseBindings(records) {
     if (parts[0] === "b" && parts.length >= 3) {
       bindings.push({
         type: "bind",
-        // We reconstruct the human-readable key string from modmask + key
         modmask: parseInt(parts[1]) || 0,
         key: parts[2],
         desc: parts[3] || "",
@@ -94,7 +151,7 @@ function parseBindings(records) {
         arg: parts[5] || "",
         command: buildCommand(parts[4] || "", parts[5] || ""),
         keys: modmaskToKeys(parseInt(parts[1]) || 0, parts[2]),
-        source: "default"  // will be overridden
+        source: "default"  // will be overridden in merge
       })
     } else if (parts[0] === "u" && parts.length >= 3) {
       bindings.push({
@@ -110,28 +167,18 @@ function parseBindings(records) {
       })
     }
   }
-  // Deduplicate by (keys, desc) — user overrides take priority
-  var seen = {}
-  var deduped = []
-  for (var j = bindings.length - 1; j >= 0; j--) {
-    var b2 = bindings[j]
-    var key = b2.keys + "|" + b2.desc
-    if (!seen[key]) {
-      seen[key] = true
-      b2.source = b2.source || "default"
-      deduped.unshift(b2)
-    }
-  }
-  return deduped
+  return bindings
 }
 
 // --------------------------------------------------------- key helpers
 
 function modmaskToKeys(modmask, key) {
   var parts = []
+  // Numeric modifier flags from read.lua:
+  // SHIFT=1, CTRL=4, ALT=8, SUPER=64
   if (modmask & 64) parts.push("SUPER")
-  if (modmask & 4) parts.push("CTRL")
   if (modmask & 8) parts.push("ALT")
+  if (modmask & 4) parts.push("CTRL")
   if (modmask & 1) parts.push("SHIFT")
   parts.push(key)
   return parts.join(" + ")
@@ -152,13 +199,85 @@ function buildCommand(kind, arg) {
   }
 }
 
+// -------------------------------------------------------------------- merge
+
+// Merge default bindings (from scanner) with managed user bindings.
+// User bindings with same (keys, desc) replace defaults.
+// Extra user bindings are appended.
+// Returns { merged, userBindings }
+function mergeBindings(defaults, managedLines) {
+  var userBindings = []
+  for (var i = 0; i < managedLines.length; i++) {
+    var parsed = parseManagedLine(managedLines[i])
+    if (parsed) userBindings.push(parsed)
+  }
+
+  var userByKey = {}
+  for (var i2 = 0; i2 < userBindings.length; i2++) {
+    var u = userBindings[i2]
+    u.source = "custom"
+    // For unbinds, also track by just the keys
+    if (u.type === "unbind") {
+      userByKey[u.keys + "||__unbind__"] = u
+    } else {
+      userByKey[u.keys + "|" + u.desc] = u
+    }
+  }
+
+  var merged = []
+  var seen = {}
+  for (var j = 0; j < defaults.length; j++) {
+    var b = defaults[j]
+    var key2 = b.keys + "|" + b.desc
+    // Check if there's a user override for this exact keys+desc
+    if (userByKey[key2]) {
+      if (!seen[key2]) {
+        var u2 = userByKey[key2]
+        u2.source = "custom"
+        merged.push(u2)
+        seen[key2] = true
+      }
+      delete userByKey[key2]
+    } else {
+      // Check if this key combo is unbound by user
+      var unbindKey = b.keys + "||__unbind__"
+      if (userByKey[unbindKey]) {
+        // Skip this default binding - it's been unbound
+      } else if (!seen[key2]) {
+        merged.push(b)
+        seen[key2] = true
+      }
+    }
+  }
+
+  // Add remaining user bindings that weren't matched
+  for (var k in userByKey) {
+    if (!seen[k] && k.indexOf("||__unbind__") === -1) {
+      userByKey[k].source = "custom"
+      merged.push(userByKey[k])
+      seen[k] = true
+    }
+  }
+
+  // Sort: custom bindings first, then defaults
+  var customs = []
+  var defaults2 = []
+  for (var i3 = 0; i3 < merged.length; i3++) {
+    if (merged[i3].source === "custom") {
+      customs.push(merged[i3])
+    } else {
+      defaults2.push(merged[i3])
+    }
+  }
+
+  return { merged: customs.concat(defaults2), userBindings: userBindings }
+}
+
 // -------------------------------------------------------------------- desktop entries
 
 function parseDesktopEntries(text) {
-  // Parse .desktop file entries, separated by ---ENTRY--- markers
   var entries = []
   if (!text) return entries
-  // Split by entry markers
   var blocks = String(text).split("---ENTRY---")
   for (var bi = 0; bi < blocks.length; bi++) {
     var block = blocks[bi].trim()
