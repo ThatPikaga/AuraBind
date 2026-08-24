@@ -62,3 +62,17 @@ Tap **Del**, or highlight a row and press Delete/Backspace.
 ## Compatibility
 
 Omarchy only. Requires `hyprctl` on your PATH (shipped with Hyprland).
+
+## Previews
+
+![Default Screen — main binding list](screenshots/preview1.png)
+
+*Default screen showing the searchable binding list and action toolbar.*
+
+![Add New Binding Screen](screenshots/preview2.png)
+
+*The Add/Edit binding panel with live key capture, description field, and action type selector.*
+
+![Disabled Keybindings](screenshots/preview3.png)
+
+*View showing disabled keybindings in the list.*
