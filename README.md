@@ -1,5 +1,7 @@
 # AuraBind
 
+`⚠️Plugin is still under development, expect bugs🐛`
+
 An overlay for creating, editing, and deleting keybindings on the fly with live key capture.
 
 Supports full key combinations (SUPER, CTRL, ALT, SHIFT + any key), a searchable binding list, and write-through to your `~/.config/hypr/bindings.lua` file using a managed fence block that coexists with hand-edited content.
