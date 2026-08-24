@@ -1972,38 +1972,56 @@ Item {
       }
     }
 
-    // ---- disabled keybindings dialog overlay
+    // ---- disabled keybindings dialog overlay (REDESIGNED)
     Rectangle {
       id: disabledDialog
       visible: false
       anchors.fill: parent
-      color: Qt.rgba(0,0,0,0.5)
+      color: Qt.rgba(0, 0, 0, 0.55)
       z: 200
       MouseArea { anchors.fill: parent; onClicked: {} }
 
       BorderSurface {
+        id: disabledDialogSurface
         anchors.centerIn: parent
-        width: Math.min(Style.space(520), parent.width - Style.gapsOut * 4)
-        height: Math.min(Style.space(480), parent.height - Style.gapsOut * 4)
+        width: Math.min(Style.space(560), parent.width - Style.gapsOut * 4)
+        height: Math.min(Style.space(520), parent.height - Style.gapsOut * 4)
         radius: Style.cornerRadius
-        color: root.background
-        borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
-        padding: Style.spacing.panelPadding
+        color: Color.popups.background
+        borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
+        padding: Style.spacing.popupPadding
 
         ColumnLayout {
           anchors.fill: parent
-          spacing: Style.spacing.panelGap
+          anchors.topMargin: disabledDialogSurface.contentTopInset
+          anchors.rightMargin: disabledDialogSurface.contentRightInset
+          anchors.bottomMargin: disabledDialogSurface.contentBottomInset
+          anchors.leftMargin: disabledDialogSurface.contentLeftInset
+          spacing: 0
 
-          // Title bar
+          // ── Title bar ──────────────────────────────────────────
           RowLayout {
             Layout.fillWidth: true
+            Layout.bottomMargin: Style.spacing.md
+            spacing: Style.spacing.sm
+
+            Rectangle {
+              width: Style.space(6)
+              height: disabledDialogTitle.implicitHeight
+              radius: Style.space(3)
+              color: root.urgent
+            }
+
             Text {
+              id: disabledDialogTitle
               text: "⚠ Disabled Keybindings (" + root.disabledBindings.length + ")"
               font.pixelSize: Style.font.heading
               font.bold: true
+              font.family: root.fontFamily
               color: root.urgent
               Layout.fillWidth: true
             }
+
             PanelActionButton {
               iconText: "X"
               tooltipText: "Close"
@@ -2012,87 +2030,225 @@ Item {
             }
           }
 
-          Text {
-            text: "These keybindings have been disabled via hl.unbind(). Click Re-enable to restore the default."
-            color: Qt.darker(root.foreground, 1.5)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
+          PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.bottomMargin: Style.spacing.sm }
+
+          // ── Description ────────────────────────────────────────
+          Rectangle {
+            Layout.fillWidth: true
+            Layout.bottomMargin: Style.spacing.md
+            height: Style.space(40)
+            radius: Style.cornerRadius
+            color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.06)
+            border.width: 1
+            border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.2)
+
+            RowLayout {
+              anchors.fill: parent
+              anchors.leftMargin: Style.spacing.md
+              anchors.rightMargin: Style.spacing.md
+              spacing: Style.spacing.sm
+
+              Text {
+                text: "⊘"
+                font.pixelSize: Style.font.subtitle
+                color: root.urgent
+              }
+              Text {
+                Layout.fillWidth: true
+                text: "These keybindings are disabled via hl.unbind(). Click Re-enable to restore the default binding."
+                color: Qt.darker(root.foreground, 1.4)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
+              }
+            }
           }
 
-          // Scrollable list of disabled bindings
-          ScrollView {
+          // ── Scrollable list of disabled bindings ───────────────
+          ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-            ScrollBar.vertical.policy: ScrollBar.AsNeeded
-            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            Layout.bottomMargin: Style.spacing.md
+            spacing: Style.spacing.sm
 
-            ListView {
-              id: disabledListView
-              anchors.fill: parent
-              spacing: Style.spacing.xs
-              model: root.disabledBindings
+            RowLayout {
+              spacing: Style.spacing.sm
+              Rectangle {
+                width: Style.space(22); height: Style.space(22); radius: Style.space(11)
+                color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.15)
+                Text {
+                  anchors.centerIn: parent; text: root.disabledBindings.length
+                  color: root.urgent; font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption; font.bold: true
+                }
+              }
+              Text {
+                text: "Disabled bindings"
+                font.pixelSize: Style.font.body; font.bold: true
+                font.family: root.fontFamily; color: root.foreground
+              }
+            }
 
-              delegate: Rectangle {
-                width: disabledListView.width
-                height: Style.space(36)
-                color: mouseHover.containsMouse
-                  ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.08)
-                  : "transparent"
-                radius: Style.cornerRadius
-                border.width: 1
-                border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.15)
+            ScrollView {
+              Layout.fillWidth: true
+              Layout.fillHeight: true
+              clip: true
+              ScrollBar.vertical.policy: ScrollBar.AsNeeded
+              ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
-                RowLayout {
-                  anchors.fill: parent
-                  anchors.margins: Style.spacing.sm
-                  spacing: Style.spacing.sm
+              ListView {
+                id: disabledListView
+                anchors.fill: parent
+                spacing: Style.spacing.xs
+                model: root.disabledBindings
 
-                  Text {
-                    text: modelData.keys
-                    color: root.urgent
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.subtitle
-                    font.bold: true
-                    Layout.preferredWidth: Style.space(180)
+                delegate: Rectangle {
+                  width: disabledListView.width
+                  height: Style.space(52)
+                  color: disabledHover.containsMouse
+                    ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.06)
+                    : "transparent"
+                  radius: Style.cornerRadius
+                  border.width: 1
+                  border.color: disabledHover.containsMouse
+                    ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.3)
+                    : Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.12)
+
+                  RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: Style.spacing.sm
+                    spacing: Style.spacing.md
+
+                    Column {
+                      spacing: 2
+                      Layout.fillWidth: true
+
+                      Text {
+                        text: modelData.keys
+                        color: root.urgent
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.subtitle
+                        font.bold: true
+                        elide: Text.ElideRight
+                      }
+
+                      Text {
+                        text: modelData.desc || "Disabled keybinding"
+                        color: Qt.darker(root.foreground, 1.5)
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                      }
+                    }
+
+                    // Re-enable button (accent-filled primary style)
+                    Rectangle {
+                      id: reEnableBtn
+                      width: reEnableBtnLabel.implicitWidth + Style.space(24)
+                      height: Style.space(30)
+                      radius: Style.cornerRadius
+                      color: reEnableBtnHover.containsMouse
+                        ? Qt.lighter(root.accent, 1.15)
+                        : root.accent
+                      anchors.verticalCenter: parent.verticalCenter
+
+                      Text {
+                        id: reEnableBtnLabel
+                        anchors.centerIn: parent
+                        text: "↻ Re-enable"
+                        color: root.background
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        font.bold: true
+                      }
+
+                      MouseArea {
+                        id: reEnableBtnHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          root.reEnableBinding(modelData.keys)
+                        }
+                      }
+                    }
                   }
 
-                  Item { Layout.fillWidth: true }
-
-                  Button {
-                    text: "Re-enable"
-                    fontFamily: root.fontFamily
-                    foreground: root.foreground
-                    accent: root.accent
-                    implicitHeight: 24
-                    onClicked: {
-                      root.reEnableBinding(modelData.keys)
-                    }
+                  MouseArea {
+                    id: disabledHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                    cursorShape: Qt.PointingHandCursor
                   }
                 }
 
-                MouseArea {
-                  id: mouseHover
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  acceptedButtons: Qt.NoButton
-                  cursorShape: Qt.PointingHandCursor
+                // Empty state
+                Rectangle {
+                  anchors.centerIn: parent
+                  visible: disabledListView.count === 0
+                  width: parent.width
+                  height: 80
+                  color: "transparent"
+                  Text {
+                    anchors.centerIn: parent
+                    text: "No disabled bindings — all defaults are active"
+                    color: Qt.darker(root.foreground, 1.6)
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
                 }
               }
             }
           }
 
-          // Close button at bottom
+          // ── Footer ─────────────────────────────────────────────
+          PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.topMargin: Style.spacing.sm }
+
           RowLayout {
             Layout.fillWidth: true
-            Item { Layout.fillWidth: true }
-            Button {
-              text: "Close"
-              foreground: root.foreground
-              accent: root.accent
-              fontFamily: root.fontFamily
-              onClicked: { disabledDialog.visible = false }
+            Layout.topMargin: Style.spacing.md
+            spacing: Style.spacing.sm
+
+            Text {
+              Layout.fillWidth: true
+              text: root.disabledBindings.length + " binding" + (root.disabledBindings.length === 1 ? "" : "s") + " disabled"
+              color: Qt.darker(root.foreground, 1.5)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+
+            // Close — ghost style
+            Rectangle {
+              id: disabledCloseBtn
+              width: disabledCloseLabel.implicitWidth + Style.space(28)
+              height: Style.space(36)
+              radius: Style.cornerRadius
+              color: disabledCloseHover.containsMouse
+                ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                : "transparent"
+              border.width: 1
+              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
+
+              Text {
+                id: disabledCloseLabel
+                anchors.centerIn: parent
+                text: "Close"
+                color: Qt.darker(root.foreground, 1.3)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              MouseArea {
+                id: disabledCloseHover
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: { disabledDialog.visible = false }
+              }
             }
           }
         }
