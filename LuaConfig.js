@@ -34,28 +34,24 @@ var ACTION_COMMENT_RE = /^\s*--\s+@aurabind\s+action=(\d+)\s*$/
 function extractActionHint(line) { var m = line.trim().match(ACTION_COMMENT_RE); if (m) return parseInt(m[1]); return -1 }
 function makeActionHint(at) { return "-- @aurabind action=" + at }
 
-function detectActionType(binding, apps) {
-  if (!binding || binding.type === "unbind") return 6
+function detectActionType(binding) {
+  if (!binding || binding.type === "unbind") return 4
   var cmd = (binding.command || "").toLowerCase()
-  if (cmd === "killactive") return 2
-  if (cmd.indexOf("omarchy-shell shell toggle ") === 0) return 3
-  if (cmd.indexOf("hl.dsp") >= 0 || cmd.indexOf("hl.dispatch") >= 0) return 4
-  if (cmd.indexOf("omarchy-launch-webapp") >= 0) return 5
-  if (apps && apps.length > 0) { for (var i = 0; i < apps.length; i++) { if ((apps[i].exec || "").toLowerCase() === cmd) return 0 } }
-  return 1
+  if (cmd === "killactive") return 1
+  if (cmd.indexOf("hl.dsp") >= 0 || cmd.indexOf("hl.dispatch") >= 0) return 2
+  if (cmd.indexOf("omarchy-launch-webapp") >= 0) return 3
+  return 0
 }
 
 function esc(s) { return String(s || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"') }
 
 function renderCmd(b, at) {
   switch(at) {
-    case 0: return b.command||b.arg||""
-    case 1: return b.command||""
-    case 2: return "killactive"
+    case 0: return b.command||""
+    case 1: return "killactive"
+    case 2: return b.command||""
     case 3: return b.command||""
-    case 4: return b.command||""
-    case 5: return b.command||""
-    case 6: return ""
+    case 4: return ""
     default: return b.command||""
   }
 }
@@ -65,9 +61,9 @@ function findDefaultForKey(keys, d) { if (!d) return null; for (var i=0;i<d.leng
 
 function renderBindingLine(defaults, binding, ah) {
   if (binding.type === "unbind") return ['hl.unbind("' + esc(binding.keys) + '")']
-  var at = ah !== undefined ? ah : (binding.actionType !== undefined ? binding.actionType : 1)
+  var at = ah !== undefined ? ah : (binding.actionType !== undefined ? binding.actionType : 0)
   var c = renderCmd(binding, at)
-  var isLua = at === 4 || binding.kind === "lua"
+  var isLua = at === 2 || binding.kind === "lua"
   var bl = isLua ? 'o.bind("'+esc(binding.keys)+'","'+esc(binding.desc)+'",'+c+')' : 'o.bind("'+esc(binding.keys)+'","'+esc(binding.desc)+'","'+esc(c)+'")'
   if (defaults && hasDefaultForKey(binding.keys, defaults)) { var dup = findDefaultForKey(binding.keys, defaults); if (dup && (dup.desc !== binding.desc || dup.command !== c)) { return [makeActionHint(at),'hl.unbind("'+esc(binding.keys)+'")',bl] } }
   if (at >= 0) return [makeActionHint(at), bl]
@@ -78,7 +74,7 @@ function parseManagedLine(line) {
   var s = line.trim()
   if (s === "" || s.startsWith("--")) return null
   var m = s.match(/^hl\.unbind\("([^"]+)"\)$/)
-  if (m) return { type:"unbind", keys:m[1], desc:"Disable Default", command:"", source:"custom", actionType:6 }
+  if (m) return { type:"unbind", keys:m[1], desc:"Disable Default", command:"", source:"custom", actionType:4 }
   m = s.match(/^o\.bind\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\)$/)
   if (m) return { type:"bind", keys:m[1], desc:m[2]||"", command:m[3]||"", source:"custom", kind:"exec", actionType:-1 }
   m = s.match(/^o\.bind\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*(.+)\)\s*$/)
@@ -284,29 +280,4 @@ function findDisabledBindings(text) {
     if (m) result.push({ keys: m[1], lineText: lines[i] })
   }
   return result
-}
-
-function parseDesktopEntries(text) {
-  var entries = []
-  if (!text) return entries
-  var blocks = String(text).split("---ENTRY---")
-  for (var bi = 0; bi < blocks.length; bi++) {
-    var block = blocks[bi].trim()
-    if (!block) continue
-    var lines = block.split("\n")
-    var current = null
-    for (var i = 0; i < lines.length; i++) {
-      var line = lines[i].trim()
-      if (line.match(/^\[Desktop Entry\]/)) { if (current) entries.push(current); current = { name:"", exec:"", icon:"", categories:"", comment:"" } }
-      else if (current) {
-        var mm = line.match(/^Name=(.+)$/); if (mm) current.name = mm[1]
-        mm = line.match(/^Exec=(.+)$/); if (mm) current.exec = mm[1].replace(/ %[fFuUdDnNickvm]/, "")
-        mm = line.match(/^Icon=(.+)$/); if (mm) current.icon = mm[1]
-        mm = line.match(/^Categories=(.+)$/); if (mm) current.categories = mm[1]
-        mm = line.match(/^Comment=(.+)$/); if (mm) current.comment = mm[1]
-      }
-    }
-    if (current) entries.push(current)
-  }
-  return entries
 }

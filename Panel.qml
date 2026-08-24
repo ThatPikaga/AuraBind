@@ -12,9 +12,7 @@ import "LuaConfig.js" as LuaConfig
 // Shows every active keybinding, manages overrides in bindings.lua.
 // Key features:
 //   • Key combo builder (mod checkboxes + dropdown key selectors)
-//   • Action types: Open App, Custom Cmd, Kill Active, Plugin, Lua/Dsp, Web App, Unbind
-//   • App dropdown with search (all installed apps)
-//   • Plugin dropdown
+//   • Action types: Command, Kill Active, Lua/Dsp, Web App, Unbind
 //   • Disabled Keybindings section with Re-enable buttons
 //   • Conflict detection
 
@@ -67,10 +65,6 @@ Item {
   // ---- filter state
   property string searchText: ""
   property string categoryFilter: "All"
-
-  // ---- dropdown data
-  property var installedApps: []
-  property var plugins: []
 
   // ---- colors & style
   property color background: Color.menu.background
@@ -146,7 +140,7 @@ Item {
   function open(payloadJson) {
     root.opened = true
     root.errorText = ""
-    root.statusText = ""
+    root.statusText = "Reading system apps and plugins…"
     root.editIndex = -1
     root.showConflictDialog = false
     root.selectedActionIndex = 0
@@ -157,8 +151,6 @@ Item {
     root.keyModShift = false
     root.keyComboKeys = []
 
-    loadApps()
-    loadPlugins()
     loadDisabledBindings()
     scanBindings()
     configFile.reload()
@@ -177,87 +169,6 @@ Item {
   function toggle() {
     if (root.opened) { root.dismiss() }
     else { root.open("{}") }
-  }
-
-  // --------------------------------------------------------- load apps
-
-  function loadApps() {
-    appScannerProc.running = true
-    flatpakProc.running = true
-  }
-
-  function onAppsScanned(text) {
-    // Cache desktop apps from the first (real) scan
-    if (text) {
-      root.cachedDesktopApps = LuaConfig.parseDesktopEntries(text || "")
-    }
-    var desktopApps = root.cachedDesktopApps || []
-    var seen = {}
-    var combined = []
-    for (var i = 0; i < desktopApps.length; i++) {
-      var key = desktopApps[i].exec || desktopApps[i].name
-      if (key && !seen[key]) {
-        seen[key] = true
-        combined.push(desktopApps[i])
-      }
-    }
-    for (var j = 0; j < root.flatpakApps.length; j++) {
-      var fa = root.flatpakApps[j]
-      if (!seen[fa.exec]) {
-        seen[fa.exec] = true
-        combined.push(fa)
-      }
-    }
-    combined.sort(function(a, b) {
-      return (a.name || "").localeCompare(b.name || "")
-    })
-    root.installedApps = combined
-  }
-
-  property var cachedDesktopApps: []
-  property var flatpakApps: []
-
-  function onFlatpakScanned(text) {
-    var apps = []
-    var lines = String(text || "").split("\n")
-    for (var i = 0; i < lines.length; i++) {
-      var parts = lines[i].split("\t")
-      if (parts.length >= 2) {
-        apps.push({
-          name: parts[0],
-          exec: "flatpak run " + parts[1],
-          icon: "",
-          categories: "",
-          comment: ""
-        })
-      }
-    }
-    root.flatpakApps = apps
-    root.onAppsScanned("")
-  }
-
-  // --------------------------------------------------------- load plugins
-
-  function loadPlugins() {
-    pluginScannerProc.running = true
-  }
-
-  function onPluginsScanned(text) {
-    var out = []
-    var lines = String(text || "").split("\n")
-    for (var i = 0; i < lines.length; i++) {
-      var line = lines[i].trim()
-      if (line === "") continue
-      var parts = line.split("|")
-      if (parts.length >= 1) {
-        out.push({
-          id: parts[0],
-          name: parts[1] || parts[0],
-          toggleCmd: "omarchy-shell shell toggle " + parts[0]
-        })
-      }
-    }
-    root.plugins = out
   }
 
   // --------------------------------------------------------- load disabled bindings
@@ -445,7 +356,7 @@ Item {
   }
 
   function setActionFromBinding(bind) {
-    var at = LuaConfig.detectActionType(bind, root.installedApps)
+    var at = LuaConfig.detectActionType(bind)
     root.selectedActionIndex = at
   }
 
@@ -463,7 +374,7 @@ Item {
         newUser.push(ub)
       }
       root.userBindings = newUser
-      remergeAndSave()
+      saveConfig()
     } else {
       var found = false
       for (var j = 0; j < root.userBindings.length; j++) {
@@ -473,10 +384,12 @@ Item {
         }
       }
       if (!found) {
-        root.userBindings.push({
+        var newUser = root.userBindings.slice()
+        newUser.push({
           type: "unbind", keys: bind.keys, desc: "Disable Default", command: ""
         })
-        remergeAndSave()
+        root.userBindings = newUser
+        saveConfig()
       }
     }
   }
@@ -517,7 +430,7 @@ Item {
       return
     }
 
-    if (root.selectedActionIndex === 6) {
+    if (root.selectedActionIndex === 4) {
       addUserBinding({ type: "unbind", keys: fullKeys, desc: descField.text || "Disabled", command: "", actionType: 6 })
       return
     }
@@ -540,27 +453,20 @@ Item {
   function buildCommandString() {
     var idx = root.selectedActionIndex
     switch (idx) {
-      case 0: // Open App
-        return appDropdownValue || ""
-      case 1: // Custom Command
+      case 0: // Command
         return dispatcherField.text.trim() || null
-      case 2: // Kill Active Window
+      case 1: // Kill Active Window
         return "killactive"
-      case 3: // Plugin
-        return pluginDropdownValue || ""
-      case 4: // Lua/Dispatcher
+      case 2: // Lua/Dispatcher
         return dispatcherField.text.trim() || null
-      case 5: // Web App
+      case 3: // Web App
         return dispatcherField.text.trim() || null
-      case 6: // Unbind
+      case 4: // Unbind
         return null
       default:
         return dispatcherField.text.trim() || null
     }
   }
-
-  property string appDropdownValue: ""
-  property string pluginDropdownValue: ""
 
   function checkConflicts(keys, newBind) {
     root.conflictBindings = []
@@ -590,9 +496,6 @@ Item {
     }
     newUser.push(nb)
     root.userBindings = newUser
-    var result = LuaConfig.mergeBindings(root.allDefaults, root.rawManagedLines)
-    root.mergedBindings = result.merged
-    root.userBindings = result.userBindings
     saveConfig()
     addDialog.visible = false
     root.editIndex = -1
@@ -615,9 +518,6 @@ Item {
     }
     newUser.push(nb)
     root.userBindings = newUser
-    var result = LuaConfig.mergeBindings(root.allDefaults, root.rawManagedLines)
-    root.mergedBindings = result.merged
-    root.userBindings = result.userBindings
     saveConfig()
     addDialog.visible = false
     root.editIndex = -1
@@ -656,39 +556,6 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onDefaultsScanned(text)
-    }
-  }
-
-  Process {
-    id: appScannerProc
-    command: ["python3", home + "/.config/omarchy/plugins/thatpikaga.aurabind/scan_apps.py"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.onAppsScanned(String(text || ""))
-      }
-    }
-  }
-
-  Process {
-    id: flatpakProc
-    command: ["python3", home + "/.config/omarchy/plugins/thatpikaga.aurabind/scan_flatpak.py"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.onFlatpakScanned(String(text || ""))
-      }
-    }
-  }
-
-  Process {
-    id: pluginScannerProc
-    command: ["python3", home + "/.config/omarchy/plugins/thatpikaga.aurabind/scan_plugins.py"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.onPluginsScanned(String(text || ""))
-      }
     }
   }
 
@@ -742,8 +609,6 @@ Item {
     repeat: false
     onTriggered: {
       scanBindings()
-      loadApps()
-      loadPlugins()
       loadDisabledBindings()
     }
   }
@@ -1046,8 +911,6 @@ Item {
                 descField.text = ""
                 dispatcherField.text = ""
                 root.selectedActionIndex = 0
-                root.appDropdownValue = ""
-                root.pluginDropdownValue = ""
                 addDialog.visible = true
               }
             }
@@ -1486,13 +1349,11 @@ Item {
 
                   Repeater {
                     model: [
-                      { label: "Open App", idx: 0 },
-                      { label: "Command", idx: 1 },
-                      { label: "Kill Win", idx: 2 },
-                      { label: "Plugin", idx: 3 },
-                      { label: "Lua/Dsp", idx: 4 },
-                      { label: "Web App", idx: 5 },
-                      { label: "Unbind", idx: 6 }
+                      { label: "Command", idx: 0 },
+                      { label: "Kill Win", idx: 1 },
+                      { label: "Lua/Dsp", idx: 2 },
+                      { label: "Web App", idx: 3 },
+                      { label: "Unbind", idx: 4 }
                     ]
 
                     delegate: Rectangle {
@@ -1525,10 +1386,7 @@ Item {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                           root.selectedActionIndex = modelData.idx
-                          root.appDropdownValue = ""
-                          root.pluginDropdownValue = ""
                           dispatcherField.text = ""
-                          appSearchField.text = ""
                         }
                       }
                     }
@@ -1561,141 +1419,17 @@ Item {
                   }
                 }
 
-                // Action 0: Open App
+                // Action 0: Command — shared with Lua/Dsp (idx 2) and Web App (idx 3)
                 ColumnLayout {
                   Layout.fillWidth: true
-                  visible: root.selectedActionIndex === 0
-                  spacing: Style.spacing.xs
-
-                  TextField {
-                    id: appSearchField
-                    Layout.fillWidth: true
-                    placeholderText: "Search installed apps…"
-                    foreground: root.foreground
-                    accent: root.accent
-                    font.family: root.fontFamily
-                  }
-
-                  Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: Style.space(180)
-                    radius: Style.cornerRadius
-                    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.03)
-                    border.width: 1
-                    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-                    clip: true
-
-                    ListView {
-                      id: appListView
-                      anchors.fill: parent
-                      anchors.margins: Style.space(2)
-                      clip: true
-                      model: {
-                        var apps = root.installedApps
-                        var q = appSearchField.text.toLowerCase()
-                        if (q === "") return apps
-                        var filtered = []
-                        for (var i = 0; i < apps.length; i++) {
-                          if ((apps[i].name || "").toLowerCase().indexOf(q) >= 0 ||
-                              (apps[i].exec || "").toLowerCase().indexOf(q) >= 0) {
-                            filtered.push(apps[i])
-                          }
-                        }
-                        return filtered
-                      }
-
-                      delegate: Rectangle {
-                        width: ListView.view.width
-                        height: Style.space(30)
-                        radius: Style.space(4)
-                        color: {
-                          if (root.appDropdownValue === modelData.exec)
-                            return Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
-                          if (appDelegateHover.containsMouse)
-                            return Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-                          return "transparent"
-                        }
-
-                        Text {
-                          anchors.verticalCenter: parent.verticalCenter
-                          anchors.left: parent.left
-                          anchors.leftMargin: Style.spacing.sm
-                          anchors.right: parent.right
-                          anchors.rightMargin: Style.spacing.sm
-                          text: modelData.name || modelData.exec
-                          color: root.appDropdownValue === modelData.exec ? root.accent : root.foreground
-                          font.family: root.fontFamily
-                          font.pixelSize: Style.font.caption
-                          font.bold: root.appDropdownValue === modelData.exec
-                          elide: Text.ElideRight
-                        }
-
-                        MouseArea {
-                          id: appDelegateHover
-                          anchors.fill: parent
-                          hoverEnabled: true
-                          cursorShape: Qt.PointingHandCursor
-                          onClicked: root.appDropdownValue = modelData.exec
-                        }
-                      }
-                    }
-
-                    Text {
-                      anchors.centerIn: parent
-                      visible: appListView.count === 0
-                      text: appSearchField.text ? "No apps match your search" : "Loading apps…"
-                      color: Qt.darker(root.foreground, 1.6)
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                    }
-                  }
-
-                  Rectangle {
-                    Layout.fillWidth: true
-                    visible: root.appDropdownValue !== ""
-                    height: Style.space(28)
-                    radius: Style.cornerRadius
-                    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.08)
-                    border.width: 1
-                    border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.25)
-
-                    RowLayout {
-                      anchors.fill: parent
-                      anchors.leftMargin: Style.spacing.sm
-                      anchors.rightMargin: Style.spacing.sm
-                      spacing: Style.spacing.xs
-
-                      Text {
-                        text: "✓"
-                        color: root.accent
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        font.bold: true
-                      }
-                      Text {
-                        Layout.fillWidth: true
-                        text: root.appDropdownValue
-                        color: root.accent
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        font.bold: true
-                        elide: Text.ElideRight
-                      }
-                    }
-                  }
-                }
-
-                // Action 1, 4, 5: Command / Lua / Web
-                ColumnLayout {
-                  Layout.fillWidth: true
-                  visible: root.selectedActionIndex === 1 || root.selectedActionIndex === 4 || root.selectedActionIndex === 5
+                  visible: root.selectedActionIndex === 0 || root.selectedActionIndex === 2 || root.selectedActionIndex === 3
                   spacing: Style.spacing.xs
 
                   Text {
                     text: {
-                      if (root.selectedActionIndex === 1) return "Enter the command to execute:"
-                      if (root.selectedActionIndex === 4) return "Enter the Lua script or dispatcher command:"
-                      if (root.selectedActionIndex === 5) return "Enter the URL to open:"
+                      if (root.selectedActionIndex === 0) return "Enter the command to execute (e.g. firefox, brave, flatpak run com.bitwarden):"
+                      if (root.selectedActionIndex === 2) return "Enter the Lua script or dispatcher command:"
+                      if (root.selectedActionIndex === 3) return "Enter the URL to open in your browser:"
                       return ""
                     }
                     color: Qt.darker(root.foreground, 1.4)
@@ -1708,9 +1442,9 @@ Item {
                     id: dispatcherField
                     Layout.fillWidth: true
                     placeholderText: {
-                      if (root.selectedActionIndex === 1) return "e.g. firefox"
-                      if (root.selectedActionIndex === 4) return "e.g. lua script or dispatcher cmd"
-                      if (root.selectedActionIndex === 5) return "e.g. https://example.com"
+                      if (root.selectedActionIndex === 0) return "e.g. firefox"
+                      if (root.selectedActionIndex === 2) return "e.g. hl.dsp:exec_cmd() or custom function"
+                      if (root.selectedActionIndex === 3) return "e.g. https://example.com"
                       return ""
                     }
                     foreground: root.foreground
@@ -1719,10 +1453,10 @@ Item {
                   }
                 }
 
-                // Action 2: Kill Active Window
+                // Action 1: Kill Active Window
                 Rectangle {
                   Layout.fillWidth: true
-                  visible: root.selectedActionIndex === 2
+                  visible: root.selectedActionIndex === 1
                   height: Style.space(48)
                   radius: Style.cornerRadius
                   color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.06)
@@ -1751,113 +1485,10 @@ Item {
                   }
                 }
 
-                // Action 3: Plugin
-                ColumnLayout {
-                  Layout.fillWidth: true
-                  visible: root.selectedActionIndex === 3
-                  spacing: Style.spacing.xs
-
-                  Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: Style.space(180)
-                    radius: Style.cornerRadius
-                    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.03)
-                    border.width: 1
-                    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-                    clip: true
-
-                    ListView {
-                      id: pluginListView
-                      anchors.fill: parent
-                      anchors.margins: Style.space(2)
-                      clip: true
-                      model: root.plugins
-
-                      delegate: Rectangle {
-                        width: ListView.view.width
-                        height: Style.space(30)
-                        radius: Style.space(4)
-                        color: {
-                          if (root.pluginDropdownValue === modelData.toggleCmd)
-                            return Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
-                          if (pluginDelegateHover.containsMouse)
-                            return Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-                          return "transparent"
-                        }
-
-                        Text {
-                          anchors.verticalCenter: parent.verticalCenter
-                          anchors.left: parent.left
-                          anchors.leftMargin: Style.spacing.sm
-                          anchors.right: parent.right
-                          anchors.rightMargin: Style.spacing.sm
-                          text: modelData.name + (modelData.id ? "  (" + modelData.id + ")" : "")
-                          color: root.pluginDropdownValue === modelData.toggleCmd ? root.accent : root.foreground
-                          font.family: root.fontFamily
-                          font.pixelSize: Style.font.caption
-                          font.bold: root.pluginDropdownValue === modelData.toggleCmd
-                          elide: Text.ElideRight
-                        }
-
-                        MouseArea {
-                          id: pluginDelegateHover
-                          anchors.fill: parent
-                          hoverEnabled: true
-                          cursorShape: Qt.PointingHandCursor
-                          onClicked: root.pluginDropdownValue = modelData.toggleCmd
-                        }
-                      }
-                    }
-
-                    Text {
-                      anchors.centerIn: parent
-                      visible: pluginListView.count === 0
-                      text: "Loading plugins…"
-                      color: Qt.darker(root.foreground, 1.6)
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                    }
-                  }
-
-                  Rectangle {
-                    Layout.fillWidth: true
-                    visible: root.pluginDropdownValue !== ""
-                    height: Style.space(28)
-                    radius: Style.cornerRadius
-                    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.08)
-                    border.width: 1
-                    border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.25)
-
-                    RowLayout {
-                      anchors.fill: parent
-                      anchors.leftMargin: Style.spacing.sm
-                      anchors.rightMargin: Style.spacing.sm
-                      spacing: Style.spacing.xs
-
-                      Text {
-                        text: "✓"
-                        color: root.accent
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        font.bold: true
-                      }
-                      Text {
-                        Layout.fillWidth: true
-                        text: root.pluginDropdownValue
-                        color: root.accent
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        font.bold: true
-                        elide: Text.ElideRight
-                      }
-                    }
-                  }
-                }
-
-                // Action 6: Unbind
+                // Action 4: Unbind
                 Rectangle {
                   Layout.fillWidth: true
-                  visible: root.selectedActionIndex === 6
+                  visible: root.selectedActionIndex === 4
                   height: Style.space(48)
                   radius: Style.cornerRadius
                   color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.06)
@@ -1885,11 +1516,7 @@ Item {
                     }
                   }
                 }
-              }
-            }
-          }
-
-          // ── Footer: Cancel / Save ────────────────────────────
+              // ── Footer: Cancel / Save ────────────────────────────
           PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.topMargin: Style.spacing.sm }
 
           RowLayout {

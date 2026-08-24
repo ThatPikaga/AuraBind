@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-import os, json, sys
+"""Scan installed Omarchy plugins and output JSON array.
+
+Safe: reads only directory names and manifest.json metadata.
+No plugin code is loaded or executed.
+"""
+import json, os
 
 home = os.environ.get("HOME", "")
 dirs = [
-    home + "/.config/omarchy/plugins/",
-    "/usr/share/omarchy/plugins/"
+    os.path.join(home, ".config/omarchy/plugins/"),
+    "/usr/share/omarchy/plugins/",
 ]
+
+entries = []
 
 for d in dirs:
     if not os.path.isdir(d):
@@ -14,14 +21,24 @@ for d in dirs:
         path = os.path.join(d, entry)
         if not os.path.isdir(path):
             continue
-        manifest = os.path.join(path, "manifest.json")
-        display = entry
-        if os.path.isfile(manifest):
+        manifest_path = os.path.join(path, "manifest.json")
+        name = entry
+        kinds = []
+        if os.path.isfile(manifest_path):
             try:
-                with open(manifest) as f:
+                with open(manifest_path, "r") as f:
                     data = json.load(f)
                     if "name" in data:
-                        display = data["name"]
-            except:
+                        name = data["name"]
+                    if "kinds" in data:
+                        kinds = data["kinds"]
+            except Exception:
                 pass
-        print(f"{entry}|{display}")
+        if not kinds or "panel" in kinds:
+            entries.append({
+                "id": entry,
+                "name": name,
+                "toggleCmd": "omarchy-shell shell toggle " + entry,
+            })
+
+print(json.dumps(entries))
