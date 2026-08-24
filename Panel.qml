@@ -140,7 +140,7 @@ Item {
   function open(payloadJson) {
     root.opened = true
     root.errorText = ""
-    root.statusText = "Reading system apps and plugins…"
+    root.statusText = "Reading bindings…"
     root.editIndex = -1
     root.showConflictDialog = false
     root.selectedActionIndex = 0
@@ -704,6 +704,7 @@ Item {
                 font.pixelSize: Style.font.caption
               }
             }
+            PanelActionButton { iconText: "?"; tooltipText: "Help"; foreground: root.foreground; onClicked: { helpDialog.visible = true } }
             PanelActionButton { iconText: "X"; tooltipText: "Close"; foreground: root.foreground; onClicked: root.dismiss() }
           }
         }
@@ -1516,7 +1517,11 @@ Item {
                     }
                   }
                 }
-              // ── Footer: Cancel / Save ────────────────────────────
+              } // ← close Step 6 ColumnLayout
+            } // ← close ScrollView inner ColumnLayout
+          } // ← close ScrollView
+
+          // ── Footer: Cancel / Save ────────────────────────────
           PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.topMargin: Style.spacing.sm }
 
           RowLayout {
@@ -1942,6 +1947,357 @@ Item {
               accent: root.urgent
               fontFamily: root.fontFamily
               onClicked: root.confirmConflictOverride()
+            }
+          }
+        }
+      }
+    }
+
+        // ---- help dialog overlay
+    Rectangle {
+      id: helpDialog
+      visible: false
+      anchors.fill: parent
+      color: Qt.rgba(0, 0, 0, 0.55)
+      z: 200
+      MouseArea { anchors.fill: parent; onClicked: {} }
+
+      BorderSurface {
+        id: helpDialogSurface
+        anchors.centerIn: parent
+        width: Math.min(Style.space(640), parent.width - Style.gapsOut * 4)
+        height: Math.min(Style.space(580), parent.height - Style.gapsOut * 4)
+        radius: Style.cornerRadius
+        color: Color.popups.background
+        borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
+        padding: Style.spacing.popupPadding
+
+        ColumnLayout {
+          anchors.fill: parent
+          anchors.topMargin: helpDialogSurface.contentTopInset
+          anchors.rightMargin: helpDialogSurface.contentRightInset
+          anchors.bottomMargin: helpDialogSurface.contentBottomInset
+          anchors.leftMargin: helpDialogSurface.contentLeftInset
+          spacing: 0
+
+          // ── Title bar ──────────────────────────────────────────
+          RowLayout {
+            Layout.fillWidth: true
+            Layout.bottomMargin: Style.spacing.md
+            spacing: Style.spacing.sm
+
+            Rectangle {
+              width: Style.space(6)
+              height: helpDialogTitle.implicitHeight
+              radius: Style.space(3)
+              color: root.accent
+            }
+
+            Text {
+              id: helpDialogTitle
+              text: "AuraBind Help"
+              font.pixelSize: Style.font.heading
+              font.bold: true
+              font.family: root.fontFamily
+              color: root.foreground
+              Layout.fillWidth: true
+            }
+
+            PanelActionButton {
+              iconText: "X"
+              tooltipText: "Close"
+              foreground: root.foreground
+              onClicked: { helpDialog.visible = false }
+            }
+          }
+
+          PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.bottomMargin: Style.spacing.sm }
+
+          // ── Scrollable content ───────────────────────────────
+          ScrollView {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            clip: true
+            ScrollBar.vertical.policy: ScrollBar.AsNeeded
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+            ColumnLayout {
+              width: parent.width
+              spacing: Style.spacing.md
+
+              // Overview
+              ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Style.spacing.xs
+
+                RowLayout {
+                  spacing: Style.spacing.sm
+                  Rectangle {
+                    width: Style.space(22); height: Style.space(22); radius: Style.space(11)
+                    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
+                    Text {
+                      anchors.centerIn: parent; text: "ℹ"
+                      color: root.accent; font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption; font.bold: true
+                    }
+                  }
+                  Text {
+                    text: "Overview"
+                    font.pixelSize: Style.font.body; font.bold: true
+                    font.family: root.fontFamily; color: root.foreground
+                  }
+                }
+
+                Text {
+                  Layout.fillWidth: true
+                  width: parent.width
+                  text: "AuraBind manages your Hyprland keybindings. Edit existing bindings, create custom ones, \nor disable defaults. Changes are saved to your bindings.lua file \nand applied immediately."
+                  color: Qt.darker(root.foreground, 1.3)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+              }
+
+              PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
+
+              // Finding installed programs
+              ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Style.spacing.xs
+
+                RowLayout {
+                  spacing: Style.spacing.sm
+                  Rectangle {
+                    width: Style.space(22); height: Style.space(22); radius: Style.space(11)
+                    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
+                    Text {
+                      anchors.centerIn: parent; text: "🔍"
+                      color: root.accent; font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption; font.bold: true
+                    }
+                  }
+                  Text {
+                    text: "Finding installed programs"
+                    font.pixelSize: Style.font.body; font.bold: true
+                    font.family: root.fontFamily; color: root.foreground
+                  }
+                }
+
+                Text {
+                  Layout.fillWidth: true
+                  text: "Use these commands to find the exact name of programs you want to bind:"
+                  color: Qt.darker(root.foreground, 1.3)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+
+                // Command examples - FIXED: proper ColumnLayout with wrapMode
+                Rectangle {
+                  Layout.fillWidth: true
+                  Layout.preferredHeight: cmdList.implicitHeight + Style.space(16)
+                  radius: Style.cornerRadius
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.03)
+                  border.width: 1
+                  border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+                  ColumnLayout {
+                    id: cmdList
+                    anchors.fill: parent
+                    anchors.margins: Style.space(8)
+                    spacing: Style.spacing.sm
+
+                    Text {
+                      Layout.fillWidth: true
+                      text: "• pacman -Qs bitwarden"
+                      color: root.accent
+                      font.family: "monospace"
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WordWrap
+                    }
+                    Text {
+                      Layout.fillWidth: true
+                      text: "  Search installed Arch packages"
+                      color: Qt.darker(root.foreground, 1.5)
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WordWrap
+                    }
+
+                    Text {
+                      Layout.fillWidth: true
+                      text: "• flatpak list | grep -i bitwarden"
+                      color: root.accent
+                      font.family: "monospace"
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WordWrap
+                    }
+                    Text {
+                      Layout.fillWidth: true
+                      text: "  Search Flatpak applications"
+                      color: Qt.darker(root.foreground, 1.5)
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WordWrap
+                    }
+
+                    Text {
+                      Layout.fillWidth: true
+                      text: "• which bitwarden"
+                      color: root.accent
+                      font.family: "monospace"
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WordWrap
+                    }
+                    Text {
+                      Layout.fillWidth: true
+                      text: "  Find executable in PATH"
+                      color: Qt.darker(root.foreground, 1.5)
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WordWrap
+                    }
+
+                    Text {
+                      Layout.fillWidth: true
+                      text: "• whereis bitwarden"
+                      color: root.accent
+                      font.family: "monospace"
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WordWrap
+                    }
+                    Text {
+                      Layout.fillWidth: true
+                      text: "  Find binary, source, and manual"
+                      color: Qt.darker(root.foreground, 1.5)
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      wrapMode: Text.WordWrap
+                    }
+                  }
+                }
+
+                Text {
+                  Layout.fillWidth: true
+                  text: "Example: If you installed Bitwarden via Flatpak, use 'flatpak run com.bitwarden.desktop' as the command."
+                  color: Qt.darker(root.foreground, 1.3)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+              }
+
+              PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
+
+              // Keybindings syntax
+              ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Style.spacing.xs
+
+                RowLayout {
+                  spacing: Style.spacing.sm
+                  Rectangle {
+                    width: Style.space(22); height: Style.space(22); radius: Style.space(11)
+                    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
+                    Text {
+                      anchors.centerIn: parent; text: "⌨"
+                      color: root.accent; font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption; font.bold: true
+                    }
+                  }
+                  Text {
+                    text: "Hyprland modifiers"
+                    font.pixelSize: Style.font.body; font.bold: true
+                    font.family: root.fontFamily; color: root.foreground
+                  }
+                }
+
+                Text {
+                  Layout.fillWidth: true
+                  text: "• SUPER = Windows/Command key\n• ALT = Alt key\n• CTRL = Control key\n• SHIFT = Shift key"
+                  color: Qt.darker(root.foreground, 1.3)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+              }
+
+              PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
+
+              // Tips
+              ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Style.spacing.xs
+
+                RowLayout {
+                  spacing: Style.spacing.sm
+                  Rectangle {
+                    width: Style.space(22); height: Style.space(22); radius: Style.space(11)
+                    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
+                    Text {
+                      anchors.centerIn: parent; text: "💡"
+                      color: root.accent; font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption; font.bold: true
+                    }
+                  }
+                  Text {
+                    text: "Tips"
+                    font.pixelSize: Style.font.body; font.bold: true
+                    font.family: root.fontFamily; color: root.foreground
+                  }
+                }
+
+                Text {
+                  Layout.fillWidth: true
+                  text: "• Use 'hl.dsp:exec_cmd(\"command\")' for advanced Lua dispatchers\n• 'killactive' kills the focused window\n• Custom bindings override defaults\n• Disabled bindings are stored as hl.unbind() calls"
+                  color: Qt.darker(root.foreground, 1.3)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+              }
+            }
+          }
+
+          // ── Footer ─────────────────────────────────────────────
+          PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.topMargin: Style.spacing.sm }
+
+          RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: Style.spacing.md
+            spacing: Style.spacing.sm
+
+            Item { Layout.fillWidth: true }
+
+            // Close — ghost style
+            Rectangle {
+              id: helpCloseBtn
+              width: helpCloseLabel.implicitWidth + Style.space(28)
+              height: Style.space(36)
+              radius: Style.cornerRadius
+              color: helpCloseHover.containsMouse
+                ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                : "transparent"
+              border.width: 1
+              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
+
+              Text {
+                id: helpCloseLabel
+                anchors.centerIn: parent
+                text: "Close"
+                color: Qt.darker(root.foreground, 1.3)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              MouseArea {
+                id: helpCloseHover
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: { helpDialog.visible = false }
+              }
             }
           }
         }

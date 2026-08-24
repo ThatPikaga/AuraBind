@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "thatpikaga.aurabind",
   "name": "AuraBind",
-  "version": "4.0.0",
+  "version": "5.0.0",
   "author": "ThatPikaga",
   "license": "MIT",
   "description": "A dedicated panel to manage Omarchy keybindings with live preview, desktop shortcuts, and auto-registration.",

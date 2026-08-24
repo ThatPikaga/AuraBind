@@ -1,6 +1,6 @@
 # AuraBind
 
-An overlay for creating, editing, and deleting Omarchy keybindings on the fly with live key capture.
+An overlay for creating, editing, and deleting keybindings on the fly with live key capture.
 
 Supports full key combinations (SUPER, CTRL, ALT, SHIFT + any key), a searchable binding list, and write-through to your `~/.config/hypr/bindings.lua` file using a managed fence block that coexists with hand-edited content.
 
@@ -17,7 +17,7 @@ Supports full key combinations (SUPER, CTRL, ALT, SHIFT + any key), a searchable
 ## Installation
 
 ```bash
-omarchy plugin clone pikaga.aurabind
+omarchy plugin clone thatpikaga.aurabind
 ```
 
 That's it. Cloning switches the bar to your local copy and the panel becomes available.
@@ -27,7 +27,7 @@ That's it. Cloning switches the bar to your local copy and the panel becomes ava
 If `omarchy plugin clone` isn't an option, clone the repo directly:
 
 ```bash
-git clone https://github.com/ThatPikaga/AuraBind.git ~/.config/omarchy/plugins/pikaga.aurabind
+git clone https://github.com/ThatPikaga/AuraBind.git ~/.config/omarchy/plugins/thatpikaga.aurabind
 ```
 
 Then force the shell to pick it up:
@@ -41,7 +41,7 @@ omarchy-shell shell rescanPlugins
 Open AuraBind from the Omarchy menu (SUPER+SPACE) by searching "AuraBind", or toggle it from a terminal:
 
 ```bash
-omarchy-shell shell toggle pikaga.aurabind
+omarchy-shell shell toggle thatpikaga.aurabind
 ```
 
 ### Adding a binding
@@ -61,7 +61,7 @@ Tap **Del**, or highlight a row and press Delete/Backspace.
 
 ## Compatibility
 
-Omarchy only. Requires `hyprctl` on your PATH (shipped with Hyprland).
+Built for Omarchy. Requires `hyprctl` on your PATH (shipped with Hyprland).
 
 ## Previews
 
