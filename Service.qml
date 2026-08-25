@@ -19,13 +19,19 @@ QtObject {
   readonly property string installScript:
       '[ -f "$1" ] || exit 0\n'
     + 'if [ -e "$2" ] && ! grep -q "$3" "$2"; then exit 0; fi\n'
-    + 'mkdir -p "${2%/*}" || exit 0\n'
-    + 'tmp=$2.aurabind.new\n'
-    + 'sed "s|@ICON@|$4|" "$1" > "$tmp" || exit 0\n'
-    + 'if cmp -s "$tmp" "$2"; then rm -f "$tmp"; else mv -f "$tmp" "$2"; fi\n'
+    + 'dir="${2%/*}"\n'
+    + 'mkdir -p "$dir" || exit 0\n'
+    + 'tmp=$(mktemp "$dir/.aurabind.XXXXXX") || exit 0\n'
+    + 'sed "s|@ICON@|$4|" "$1" > "$tmp" || { rm -f "$tmp"; exit 0; }\n'
+    + 'if [ -e "$2" ]; then\n'
+    + '  if [ -L "$2" ]; then rm -f "$2"; fi\n'
+    + '  if [ "$(stat -c %u "$2" 2>/dev/null)" != "$(id -u)" ]; then rm -f "$tmp"; exit 0; fi\n'
+    + 'fi\n'
+    + 'mv -f "$tmp" "$2"\n'
 
   readonly property string removeScript:
-    'grep -q "$2" "$1" 2>/dev/null && rm -f "$1"\n'
+    'if [ -L "$1" ]; then exit 0; fi\n'
+    + 'if [ -e "$1" ] && grep -q "$2" "$1" 2>/dev/null; then rm -f "$1"; fi\n'
 
   property bool installed: false
 

@@ -8,10 +8,10 @@ import qs.Commons
 import qs.Ui
 import "LuaConfig.js" as LuaConfig
 
-// AuraBind v3.0 — Omarchy Hyprland keybindings manager.
+// AuraBind v5.0.1 — Omarchy Hyprland keybindings manager.
 // Shows every active keybinding, manages overrides in bindings.lua.
 // Key features:
-//   • Key combo builder (mod checkboxes + dropdown key selectors)
+//   • Searchable key dropdown (replaces buggy global key listening)
 //   • Action types: Command, Kill Active, Lua/Dsp, Web App, Unbind
 //   • Disabled Keybindings section with Re-enable buttons
 //   • Conflict detection
@@ -28,7 +28,6 @@ Item {
   readonly property string configPath: home + "/.config/hypr/bindings.lua"
 
   property bool opened: false
-
 
   // ---- data
   property var allDefaults: []
@@ -81,6 +80,30 @@ Item {
     "Navigation"
   ]
 
+  readonly property var allKeys: [
+    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+    "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+    "SPACE", "RETURN", "ESCAPE", "TAB", "BACKSPACE", "DELETE",
+    "INSERT", "HOME", "END", "PAGEUP", "PAGEDOWN",
+    "UP", "DOWN", "LEFT", "RIGHT",
+    "CAPSLOCK", "NUMLOCK", "SCROLLLOCK", "PRINT", "PAUSE", "MENU", "HELP",
+    "COMMA", "PERIOD", "SLASH", "BACKSLASH", "SEMICOLON", "APOSTROPHE",
+    "MINUS", "EQUAL", "BRACKETLEFT", "BRACKETRIGHT", "GRAVE",
+    "KP_0", "KP_1", "KP_2", "KP_3", "KP_4", "KP_5", "KP_6", "KP_7", "KP_8", "KP_9",
+    "KP_DIVIDE", "KP_MULTIPLY", "KP_SUBTRACT", "KP_ADD", "KP_ENTER", "KP_DECIMAL",
+    "XF86AudioMute", "XF86AudioLowerVolume", "XF86AudioRaiseVolume",
+    "XF86AudioPlay", "XF86AudioPause", "XF86AudioStop", "XF86AudioPrev", "XF86AudioNext",
+    "XF86AudioMedia", "XF86AudioMicMute",
+    "XF86MonBrightnessUp", "XF86MonBrightnessDown",
+    "XF86Launch0", "XF86Launch1", "XF86Launch2", "XF86Launch3", "XF86Launch4", "XF86Launch5", "XF86Launch6", "XF86Launch7", "XF86Launch8", "XF86Launch9", "XF86LaunchA", "XF86LaunchB", "XF86LaunchC", "XF86LaunchD", "XF86LaunchE", "XF86LaunchF",
+    "XF86Mail", "XF86HomePage", "XF86Search", "XF86Calculator", "XF86Explorer",
+    "XF86PowerOff", "XF86Sleep", "XF86WLAN", "XF86Tools",
+    "MOUSE_LEFT", "MOUSE_RIGHT", "MOUSE_MIDDLE", "MOUSE_BACK", "MOUSE_FORWARD",
+    "MOUSE_SCROLL_UP", "MOUSE_SCROLL_DOWN"
+  ]
+
   readonly property var categoryKeywords: {
     "Applications": ["browser", "terminal", "file manager", "editor", "music",
       "spotify", "obsidian", "signal", "docker", "chatgpt", "email",
@@ -111,29 +134,6 @@ Item {
       "next window", "previous window", "next monitor", "previous monitor",
       "next workspace", "tab"]
   }
-
-  readonly property var allKeys: [
-    "A","B","C","D","E","F","G","H","I","J","K","L","M",
-    "N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
-    "0","1","2","3","4","5","6","7","8","9",
-    "F1","F2","F3","F4","F5","F6","F7","F8","F9","F10",
-    "F11","F12","F13","F14","F15","F16","F17","F18","F19","F20",
-    "F21","F22","F23","F24","F25",
-    "RETURN","ESCAPE","TAB","BACKSPACE","DELETE","SPACE",
-    "LEFT","RIGHT","UP","DOWN",
-    "COMMA","PERIOD","SLASH","MINUS","EQUAL",
-    "APOSTROPHE","SEMICOLON","BRACKETLEFT","BRACKETRIGHT","BACKSLASH","GRAVE",
-    "HOME","END","PAGEUP","PAGEDOWN","INSERT",
-    "PAUSE","SCROLLLOCK","PRINT","HELP","MENU",
-    "XF86AudioRaiseVolume","XF86AudioLowerVolume","XF86AudioMute","XF86AudioMicMute",
-    "XF86MonBrightnessUp","XF86MonBrightnessDown",
-    "XF86KbdBrightnessUp","XF86KbdBrightnessDown","XF86KbdLightOnOff",
-    "XF86TouchpadToggle","XF86TouchpadOn","XF86TouchpadOff",
-    "XF86AudioPlay","XF86AudioPause","XF86AudioNext","XF86AudioPrev","XF86AudioStop",
-    "XF86Launch1","XF86Launch2","XF86Launch3","XF86Launch4","XF86Launch5",
-    "XF86Favorites","XF86Search","XF86HomePage","XF86Mail","XF86Calculator"
-  ]
-
 
   // ------------------------------------------------------------- lifecycle
 
@@ -179,47 +179,31 @@ Item {
   }
 
   // ------------------------------------------------------- scan bindings
-  //
-  // Reads all Lua binding source files as plain text and PARSEs them with
-  // the non-executing parser in LuaConfig.js. No file is ever loaded or
-  // executed as Lua code — eliminating the arbitrary-code-execution risk
-  // from the old read.lua approach.
+  // SECURE: Uses argument-array find instead of shell globbing to prevent injection.
 
   function scanBindings() {
-    // User config is already loaded via configFile.text()
-    // Load defaults from Omarchy default binding directory
     var oPath = root.omarchyPath || "/usr/share/omarchy"
-    // Process to cat all default binding files
-    defaultsScannerProc.command = ["sh", "-c", "cat " + oPath + "/default/hypr/bindings/*.lua 2>/dev/null || true"]
+    defaultsScannerProc.command = ["find", oPath + "/default/hypr/bindings", "-maxdepth", "1", "-name", "*.lua", "-type", "f", "-exec", "cat", "{}", "+"]
     defaultsScannerProc.running = true
   }
 
   function onDefaultsScanned(text) {
-    // Parse default bindings from the concatenated source text
     var defaults = LuaConfig.parseLuaSourceForBindings(text || "", "default")
-
-    // Parse user's bindings.lua (the non-managed-block portion)
     var userFileText = configFile.text() || ""
     var split = LuaConfig.splitBlock(userFileText)
     var body = split.found ? split.body : ""
     var beforeBlock = split.found ? split.before : userFileText
 
-    // Parse user custom bindings (from the managed block)
     var managedLines = body.split("\n")
     root.rawManagedLines = managedLines
 
-    // Also parse any hl.unbind() or o.bind() calls that the user wrote
-    // BEFORE the managed block (outside the fence)
     var outsideBindings = LuaConfig.parseLuaSourceForBindings(beforeBlock, "custom-outside")
-
-    // Merge: defaults + outside bindings for display, userBindings from the managed block
     var allParsed = defaults.slice()
-    // Add outside bindings to the user bindings pool
     var combinedUserBindings = LuaConfig.parseManagedBlock(managedLines.join("\n"))
+    
     for (var i = 0; i < outsideBindings.length; i++) {
       var ob = outsideBindings[i]
       if (ob.type === "unbind") {
-        // Check if it's already in the managed block
         var found = false
         for (var j = 0; j < combinedUserBindings.length; j++) {
           if (combinedUserBindings[j].type === "unbind" && combinedUserBindings[j].keys === ob.keys) {
@@ -231,7 +215,6 @@ Item {
     }
 
     var result = LuaConfig.mergeBindings(allParsed, managedLines)
-    // Keep outside-bindings visible too
     for (var k = 0; k < outsideBindings.length; k++) {
       var ob2 = outsideBindings[k]
       var exists = false
@@ -253,9 +236,6 @@ Item {
     root.statusText = result.merged.length + " bindings loaded"
     statusClear.restart()
   }
-
-  // For completeness, also explicitly read user hl.bind/o.bind calls
-  // from outside the managed block (the -- before the fence)
 
   // --------------------------------------------------------- categorization
 
@@ -335,7 +315,6 @@ Item {
     var bind2 = root.mergedBindings[root.editIndex]
     if (!bind2) return
 
-    // Parse key combo from "SUPER + SHIFT + A" etc.
     var arr = bind2.keys.split(" + ")
     root.keyComboKeys = []
     root.keyModSuper = false; root.keyModAlt = false; root.keyModCtrl = false; root.keyModShift = false
@@ -352,7 +331,16 @@ Item {
 
     descField.text = bind2.desc
     root.setActionFromBinding(bind2)
+    
+    // UX FIX: Populate command box with existing command when editing
+    if (bind2.command && bind2.type !== "unbind") {
+        dispatcherField.text = bind2.command
+    } else {
+        dispatcherField.text = ""
+    }
+    
     addDialog.visible = true
+    addDialog.forceActiveFocus()
   }
 
   function setActionFromBinding(bind) {
@@ -453,18 +441,12 @@ Item {
   function buildCommandString() {
     var idx = root.selectedActionIndex
     switch (idx) {
-      case 0: // Command
-        return dispatcherField.text.trim() || null
-      case 1: // Kill Active Window
-        return "killactive"
-      case 2: // Lua/Dispatcher
-        return dispatcherField.text.trim() || null
-      case 3: // Web App
-        return dispatcherField.text.trim() || null
-      case 4: // Unbind
-        return null
-      default:
-        return dispatcherField.text.trim() || null
+      case 0: return dispatcherField.text.trim() || null
+      case 1: return "killactive"
+      case 2: return dispatcherField.text.trim() || null
+      case 3: return dispatcherField.text.trim() || null
+      case 4: return null
+      default: return dispatcherField.text.trim() || null
     }
   }
 
@@ -529,7 +511,6 @@ Item {
   // ------------------------------------------------------- re-enable disabled binding
 
   function reEnableBinding(keys) {
-    // Remove just the hl.unbind() line from the userBindings and the raw file
     var newUser = []
     for (var i = 0; i < root.userBindings.length; i++) {
       var ub = root.userBindings[i]
@@ -538,7 +519,6 @@ Item {
     }
     root.userBindings = newUser
 
-    // Also remove from disabledBindings
     var newDisabled = []
     for (var j = 0; j < root.disabledBindings.length; j++) {
       if (root.disabledBindings[j].keys !== keys) newDisabled.push(root.disabledBindings[j])
@@ -548,14 +528,17 @@ Item {
     saveConfig()
   }
 
-
   // ------------------------------------------------------------- Processes
 
   Process {
     id: defaultsScannerProc
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onDefaultsScanned(text)
+      onStreamFinished: {
+        var t = text || ""
+        if (t.length > 1000000) t = t.substring(0, 1000000) // Cap at 1MB
+        root.onDefaultsScanned(t)
+      }
     }
   }
 
@@ -681,6 +664,7 @@ Item {
               color: Qt.darker(root.foreground, 1.6)
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
+              textFormat: Text.PlainText
             }
           }
 
@@ -781,6 +765,7 @@ Item {
                 spacing: 3
                 Text {
                   text: modelData.keys
+                  textFormat: Text.PlainText
                   color: modelData.type === "unbind" ? root.urgent : root.accent
                   font.family: root.fontFamily
                   font.bold: true
@@ -797,6 +782,7 @@ Item {
                     id: catLabel
                     anchors.centerIn: parent
                     text: root.categorize(modelData)
+                    textFormat: Text.PlainText
                     color: Qt.darker(root.foreground, 1.4)
                     font.pixelSize: 9
                     font.family: root.fontFamily
@@ -811,6 +797,7 @@ Item {
                 spacing: 3
                 Text {
                   text: modelData.desc
+                  textFormat: Text.PlainText
                   color: modelData.source === "custom" ? root.accent : root.foreground
                   font.family: root.fontFamily
                   font.weight: modelData.source === "custom" ? Font.Bold : Font.DemiBold
@@ -819,6 +806,7 @@ Item {
                 }
                 Text {
                   text: modelData.source === "custom" ? "✦ Custom" : (modelData.type === "unbind" ? "✕ Disabled" : "Default")
+                  textFormat: Text.PlainText
                   color: modelData.source === "custom" ? Qt.lighter(root.accent, 1.2) : (modelData.type === "unbind" ? root.urgent : Qt.darker(root.foreground, 1.5))
                   font.family: root.fontFamily
                   font.pixelSize: 9
@@ -830,6 +818,7 @@ Item {
                 Layout.fillWidth: true
                 Layout.minimumWidth: Style.space(140)
                 text: modelData.type === "unbind" ? "Disabled" : modelData.command
+                textFormat: Text.PlainText
                 color: modelData.type === "unbind" ? root.urgent : Qt.darker(root.foreground, 1.3)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -913,6 +902,7 @@ Item {
                 dispatcherField.text = ""
                 root.selectedActionIndex = 0
                 addDialog.visible = true
+                addDialog.forceActiveFocus()
               }
             }
 
@@ -951,6 +941,7 @@ Item {
     Rectangle {
       id: addDialog
       visible: false
+      focus: true
       anchors.fill: parent
       color: Qt.rgba(0, 0, 0, 0.55)
       z: 200
@@ -1197,7 +1188,7 @@ Item {
 
               PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
 
-              // ── Step 3 · Key Selectors ───────────────────────
+              // ── Step 3 · Key Selectors (UX FIX: Searchable Dropdown) ───────────────────────
               ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.spacing.sm
@@ -1229,24 +1220,192 @@ Item {
 
                     Text {
                       text: "Key " + (index + 1)
+                      textFormat: Text.PlainText
                       color: Qt.darker(root.foreground, 1.4)
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       Layout.preferredWidth: Style.space(42)
                     }
 
-                    Dropdown {
+                    // Searchable Dropdown Implementation
+                    Item {
+                      id: keySelector
                       Layout.fillWidth: true
-                      foreground: root.foreground
-                      accent: root.accent
-                      fontFamily: root.fontFamily
-                      value: root.keyComboKeys[index] || ""
-                      options: root.allKeys
-                      onChanged: function(val) {
-                        var arr = root.keyComboKeys.slice()
-                        while (arr.length <= index) arr.push("")
-                        arr[index] = val
-                        root.keyComboKeys = arr
+                      Layout.preferredHeight: Style.space(36)
+
+                      property string selectedKey: root.keyComboKeys[index] !== undefined ? root.keyComboKeys[index] : ""
+                      property bool isPopupOpen: false
+                      property string filterText: ""
+
+                      Rectangle {
+                        anchors.fill: parent
+                        radius: Style.cornerRadius
+                        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                        border.width: 1
+                        border.color: keyField.activeFocus || keySelector.isPopupOpen ? root.accent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
+
+                        RowLayout {
+                          anchors.fill: parent
+                          anchors.leftMargin: Style.spacing.sm
+                          anchors.rightMargin: 0
+                          spacing: 0
+
+                          TextInput {
+                            id: keyField
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            text: keySelector.selectedKey
+                            color: root.foreground
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.body
+                            clip: true
+                            selectByMouse: true
+                            verticalAlignment: TextInput.AlignVCenter
+                            
+                            onTextChanged: {
+                              keySelector.filterText = text
+                              if (!keySelector.isPopupOpen && text.length > 0) keySelector.isPopupOpen = true
+                            }
+                            
+                            onEditingFinished: commitSelection()
+                            onActiveFocusChanged: {
+                              if (!activeFocus && !keyPopup.visible) commitSelection()
+                            }
+
+                            function commitSelection() {
+                              var arr = root.keyComboKeys.slice()
+                              while (arr.length <= index) arr.push("")
+                              arr[index] = text.toUpperCase()
+                              root.keyComboKeys = arr
+                              keySelector.selectedKey = text.toUpperCase()
+                              keySelector.isPopupOpen = false
+                            }
+                            
+                            Keys.onDownPressed: {
+                              keyPopup.open()
+                              keyListView.forceActiveFocus()
+                              keyListView.currentIndex = 0
+                            }
+                            Keys.onEnterPressed: commitSelection()
+                            Keys.onReturnPressed: commitSelection()
+                            Keys.onEscapePressed: keySelector.isPopupOpen = false
+                          }
+
+                          Rectangle {
+                            Layout.preferredWidth: Style.space(36)
+                            Layout.fillHeight: true
+                            color: "transparent"
+                            MouseArea {
+                              anchors.fill: parent
+                              cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                keySelector.isPopupOpen = !keySelector.isPopupOpen
+                                if (keySelector.isPopupOpen) keyField.forceActiveFocus()
+                              }
+                            }
+                            Text {
+                              anchors.centerIn: parent
+                              text: keySelector.isPopupOpen ? "▲" : "▼"
+                              color: root.foreground
+                              font.pixelSize: Style.font.caption
+                            }
+                          }
+                        }
+                      }
+
+                      // Popup reparented to addDialog to prevent ScrollView clipping
+                      Popup {
+                        id: keyPopup
+                        parent: addDialog
+                        width: keySelector.width
+                        height: Math.min(Style.space(200), keyListView.contentHeight + Style.space(16))
+                        
+                        property point globalPos: keySelector.mapToItem(addDialog, 0, 0)
+                        x: globalPos.x
+                        y: globalPos.y + keySelector.height
+                        
+                        padding: 0
+                        visible: keySelector.isPopupOpen
+                        modal: false
+                        focus: false
+                        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+                        onClosed: keySelector.isPopupOpen = false
+
+                        background: Rectangle {
+                          color: Color.popups.background
+                          border.width: 1
+                          border.color: Color.popups.border
+                          radius: Style.cornerRadius
+                        }
+
+                        contentItem: ListView {
+                          id: keyListView
+                          clip: true
+                          model: keySelector.filteredKeysModel
+                          spacing: 2
+                          ScrollBar.vertical: ScrollBar {}
+                          
+                          Keys.onUpPressed: { if (currentIndex > 0) currentIndex-- }
+                          Keys.onDownPressed: { if (currentIndex < count - 1) currentIndex++ }
+                          Keys.onEnterPressed: { if (currentItem) currentItem.selectKey() }
+                          Keys.onReturnPressed: { if (currentItem) currentItem.selectKey() }
+                          Keys.onEscapePressed: { keySelector.isPopupOpen = false; keyField.forceActiveFocus() }
+
+                          delegate: Item {
+                            id: keyDelegate
+                            width: keyListView.width
+                            height: Style.space(32)
+                            
+                            property bool isHovered: hoverArea.containsMouse
+                            property bool isSelected: modelData.toUpperCase() === keyField.text.toUpperCase()
+                            
+                            function selectKey() {
+                              keyField.text = modelData
+                              keyField.commitSelection()
+                              keyPopup.close()
+                              keyField.forceActiveFocus()
+                            }
+
+                            Rectangle {
+                              anchors.fill: parent
+                              anchors.margins: 2
+                              radius: Style.cornerRadius
+                              color: isSelected ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.2) : 
+                                     isHovered ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1) : "transparent"
+                            }
+                            
+                            Text {
+                              anchors.verticalCenter: parent.verticalCenter
+                              anchors.left: parent.left
+                              anchors.leftMargin: Style.spacing.sm
+                              text: modelData
+                              color: isSelected ? root.accent : root.foreground
+                              font.family: root.fontFamily
+                              font.pixelSize: Style.font.body
+                              font.bold: isSelected
+                            }
+                            
+                            MouseArea {
+                              id: hoverArea
+                              anchors.fill: parent
+                              hoverEnabled: true
+                              cursorShape: Qt.PointingHandCursor
+                              onClicked: keyDelegate.selectKey()
+                            }
+                          }
+                        }
+                      }
+
+                      property var filteredKeysModel: {
+                        var out = []
+                        var filter = keySelector.filterText.toLowerCase()
+                        for (var i = 0; i < root.allKeys.length; i++) {
+                          if (filter === "" || root.allKeys[i].toLowerCase().indexOf(filter) !== -1) {
+                            out.push(root.allKeys[i])
+                          }
+                        }
+                        return out.slice(0, 100) // Limit to 100 to avoid lag
                       }
                     }
                   }
@@ -1274,6 +1433,7 @@ Item {
 
                     Text {
                       text: root.buildKeyComboString() || "(no keys selected)"
+                      textFormat: Text.PlainText
                       color: root.buildKeyComboString() ? root.foreground : Qt.darker(root.foreground, 1.6)
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.subtitle
@@ -1316,6 +1476,7 @@ Item {
                   foreground: root.foreground
                   accent: root.accent
                   font.family: root.fontFamily
+                  maximumLength: 200 // Cap field size
                 }
               }
 
@@ -1451,6 +1612,7 @@ Item {
                     foreground: root.foreground
                     accent: root.accent
                     font.family: root.fontFamily
+                    maximumLength: 1000 // Cap field size
                   }
                 }
 
@@ -1759,6 +1921,7 @@ Item {
 
                       Text {
                         text: modelData.keys
+                        textFormat: Text.PlainText
                         color: root.urgent
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.subtitle
@@ -1768,6 +1931,7 @@ Item {
 
                       Text {
                         text: modelData.desc || "Disabled keybinding"
+                        textFormat: Text.PlainText
                         color: Qt.darker(root.foreground, 1.5)
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.caption
@@ -1918,6 +2082,7 @@ Item {
           }
           Text {
             text: "This key combination is already used by another custom binding. Override it?"
+            textFormat: Text.PlainText
             color: root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -1925,6 +2090,7 @@ Item {
           }
           Text {
             text: "Existing: " + (root.conflictBindings.length > 0 ? root.conflictBindings[0].desc : "unknown")
+            textFormat: Text.PlainText
             color: Qt.darker(root.foreground, 1.5)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

@@ -1,69 +1,95 @@
 # AuraBind
 
-`⚠️Plugin is still under development, expect bugs🐛`
-
-An overlay for creating, editing, and deleting keybindings on the fly with live key capture.
+An application for managing Hyprland keybindings on the fly with a robust searchable key selector.
 
 Supports full key combinations (SUPER, CTRL, ALT, SHIFT + any key), a searchable binding list, and write-through to your `~/.config/hypr/bindings.lua` file using a managed fence block that coexists with hand-edited content.
 
 ## Features
 
-- **Live key capture** — press any key combination to record it
-- **Smart action types** — Open App, Custom Command, Start Plugin, Workspace, Kill Active, Reload, or Unbind (disable a default binding)
-- **Search & filter** your bindings
-- **Vim-style navigation** — `j`/`k` to move, `Enter` to edit, `Delete` to remove, `Esc` to close
-- **Instant apply** — saves to `bindings.lua` and runs `hyprctl reload` automatically
-- **Error checking** — runs `hyprctl configerrors` after every reload
-- **Launcher registration** — accessible from SUPER+SPACE (Omarchy menu) and desktop launchers
+- **Searchable key selector** — easily find and bind any standard, media, or mouse key via a searchable dropdown, completely avoiding Wayland global key interception issues.
+- **Smart action types** — Execute Commands, Kill Active Window, run Lua/Dispatchers, open Web Apps, or Unbind (disable a default binding).
+- **Search & filter** your bindings by category or text.
+- **Conflict detection** — warns you before overriding an existing custom keybinding.
+- **Disabled bindings manager** — easily view and re-enable default bindings you've previously disabled.
+- **Vim-style navigation** — `j`/`k` to move, `Enter` to edit, `Delete` to remove, `Esc` to close.
+- **Instant apply** — saves to `bindings.lua` and runs `hyprctl reload` automatically.
+- **Error checking** — runs `hyprctl configerrors` after every reload to catch syntax mistakes.
+- **Launcher registration** — accessible from `SUPER+SPACE` (Omarchy menu) and other desktop launchers.
+
+---
 
 ## Installation
+
+### Omarchy
 
 ```bash
 omarchy plugin clone thatpikaga.aurabind
 ```
-
 That's it. Cloning switches the bar to your local copy and the panel becomes available.
 
-### Manual install
-
-If `omarchy plugin clone` isn't an option, clone the repo directly:
+**Manual install**
+If omarchy plugin clone isn't an option, clone the repo directly:
 
 ```bash
 git clone https://github.com/ThatPikaga/AuraBind.git ~/.config/omarchy/plugins/thatpikaga.aurabind
 ```
-
 Then force the shell to pick it up:
 
 ```bash
 omarchy-shell shell rescanPlugins
 ```
 
-## Usage
+### General Install
+If you are not using Omarchy, simply clone the repository directly into your home directory:
 
+```bash
+git clone https://github.com/ThatPikaga/AuraBind.git ~/AuraBind
+```
+
+---
+
+## Usage
+### Omarchy
 Open AuraBind from the Omarchy menu (SUPER+SPACE) by searching "AuraBind", or toggle it from a terminal:
 
 ```bash
 omarchy-shell shell toggle thatpikaga.aurabind
 ```
+### General Usage
+If you installed AuraBind to your home directory, navigate to the folder and launch the interface directly using Quickshell:
+
+```bash
+cd ~/AuraBind
+quickshell
+```
+>Note: General usage requires a Wayland compositor with wlr-layer-shell support and Quickshell installed on your system.
+
+---
 
 ### Adding a binding
+Click + Add Binding at the bottom of the window.
 
-1. Click **Add** (or navigate to an empty slot and press Enter)
-2. Click **Click to capture** and press your desired key combination
-3. Enter a description and choose an action type
-4. Click **Save**
+- Toggle your desired Modifiers (SUPER, ALT, CTRL, SHIFT) and set the number of keys in the combo.
+
+- Click the searchable dropdown and type to find your key (e.g., type "XF86" for media keys, or "SPACE").
+
+- Enter a description and choose an Action type (Command, Kill Win, Lua/Dsp, Web App, or Unbind).
+
+- Fill in the Action details (e.g., the terminal command or URL).
+
+- Click Save.
 
 ### Editing
+Tap the Edit (✎) button on any row, or highlight it and press Enter.
 
-Tap **Edit** on any row, or highlight it and press Enter.
+### Removing / Disabling
+Tap the Disable (⊘) or Delete (✕) button, or highlight a row and press Delete/Backspace. Disabled default bindings can be restored later via the "⚠ Disabled" menu at the bottom right.
 
-### Removing
-
-Tap **Del**, or highlight a row and press Delete/Backspace.
+---
 
 ## Compatibility
 
-Built for Omarchy. Requires `hyprctl` on your PATH (shipped with Hyprland).
+Built for Hyprland. Requires `hyprctl` on your PATH.
 
 ## Previews
 
