@@ -93,13 +93,13 @@ Built for Hyprland. Requires `hyprctl` on your PATH.
 
 ## Previews
 
-![Default Screen — main binding list](screenshots/preview1.png)
+![Default Screen — main binding list](screenshots/preview.png)
 
 *Default screen showing the searchable binding list and action toolbar.*
 
 ![Add New Binding Screen](screenshots/preview2.png)
 
-*The Add/Edit binding panel with live key capture, description field, and action type selector.*
+*The Add/Edit binding panel with key assigning, description field, and action type selector.*
 
 ![Disabled Keybindings](screenshots/preview3.png)
 
