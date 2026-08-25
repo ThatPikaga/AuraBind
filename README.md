@@ -1,5 +1,7 @@
 # AuraBind
 
+![Cover Art](preview.png)
+
 An application for managing Hyprland keybindings on the fly with a robust searchable key selector.
 
 Supports full key combinations (SUPER, CTRL, ALT, SHIFT + any key), a searchable binding list, and write-through to your `~/.config/hypr/bindings.lua` file using a managed fence block that coexists with hand-edited content.
