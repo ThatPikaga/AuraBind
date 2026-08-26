@@ -9,13 +9,6 @@ import qs.Ui
 import "LuaConfig.js" as LuaConfig
 
 // AuraBind v5.0.1 — Omarchy Hyprland keybindings manager.
-// Shows every active keybinding, manages overrides in bindings.lua.
-// Key features:
-//   • Searchable key dropdown (replaces buggy global key listening)
-//   • Action types: Command, Kill Active, Lua/Dsp, Web App, Unbind
-//   • Disabled Keybindings section with Re-enable buttons
-//   • Conflict detection
-
 Item {
   id: root
 
@@ -35,6 +28,10 @@ Item {
   property var userBindings: []
   property var rawManagedLines: []
   property var disabledBindings: []
+  
+  // Security: Safe file reading properties
+  property string fileContent: ""
+  property string lastModTime: ""
 
   // ---- UI state
   property string errorText: ""
@@ -153,7 +150,7 @@ Item {
 
     loadDisabledBindings()
     scanBindings()
-    configFile.reload()
+    safeReaderProc.running = true
   }
 
   function close() {
@@ -174,13 +171,16 @@ Item {
   // --------------------------------------------------------- load disabled bindings
 
   function loadDisabledBindings() {
-    var found = LuaConfig.findDisabledBindings(configFile.text())
+    var found = LuaConfig.findDisabledBindings(root.fileContent)
     root.disabledBindings = found
   }
 
-  // ------------------------------------------------------- scan bindings
-  // SECURE: Uses argument-array find instead of shell globbing to prevent injection.
+  function onFileRead() {
+    root.loadDisabledBindings()
+    root.scanBindings()
+  }
 
+  // ------------------------------------------------------- scan bindings
   function scanBindings() {
     var oPath = root.omarchyPath || "/usr/share/omarchy"
     defaultsScannerProc.command = ["find", oPath + "/default/hypr/bindings", "-maxdepth", "1", "-name", "*.lua", "-type", "f", "-exec", "cat", "{}", "+"]
@@ -189,7 +189,7 @@ Item {
 
   function onDefaultsScanned(text) {
     var defaults = LuaConfig.parseLuaSourceForBindings(text || "", "default")
-    var userFileText = configFile.text() || ""
+    var userFileText = root.fileContent || ""
     var split = LuaConfig.splitBlock(userFileText)
     var body = split.found ? split.body : ""
     var beforeBlock = split.found ? split.before : userFileText
@@ -273,12 +273,13 @@ Item {
 
   function saveConfig() {
     var body = renderManagedBody()
-    var current = configFile.text()
+    var current = root.fileContent
     var next = LuaConfig.applyBlock(current, body)
     if (next === current) { reloadProc.running = true; return }
     root.statusText = "Saving..."
     root.selfWrite = true
-    configFile.setText(next)
+    writerProc.textToWrite = next
+    writerProc.running = true
   }
 
   property bool selfWrite: false
@@ -287,7 +288,7 @@ Item {
     root.selfWrite = false
     root.statusText = "Saved! hyprctl reload..."
     reloadProc.running = true
-    configFile.reload()
+    safeReaderProc.running = true
     loadDisabledBindings()
     scanBindings()
   }
@@ -332,7 +333,6 @@ Item {
     descField.text = bind2.desc
     root.setActionFromBinding(bind2)
     
-    // UX FIX: Populate command box with existing command when editing
     if (bind2.command && bind2.type !== "unbind") {
         dispatcherField.text = bind2.command
     } else {
@@ -383,7 +383,7 @@ Item {
   }
 
   function remergeAndSave() {
-    var split = LuaConfig.splitBlock(configFile.text())
+    var split = LuaConfig.splitBlock(root.fileContent)
     var managedLines = split.found ? split.body.split("\n") : []
     root.userBindings = LuaConfig.parseManagedBlock(managedLines.join("\n"))
     var result = LuaConfig.mergeBindings(root.allDefaults, managedLines)
@@ -536,7 +536,7 @@ Item {
       waitForEnd: true
       onStreamFinished: {
         var t = text || ""
-        if (t.length > 1000000) t = t.substring(0, 1000000) // Cap at 1MB
+        if (t.length > 1000000) t = t.substring(0, 1000000)
         root.onDefaultsScanned(t)
       }
     }
@@ -560,6 +560,67 @@ Item {
     }
   }
 
+  // SECURITY FIX: Bounded, no-follow regular file reader
+  Process {
+    id: safeReaderProc
+    command: ["sh", "-c", 'f="$1"; if [ -L "$f" ]; then echo "SYMLINK"; exit 0; fi; if [ ! -f "$f" ]; then echo "NOT_FILE"; exit 0; fi; size=$(stat -c %s "$f" 2>/dev/null || echo 0); if [ "$size" -gt 5000000 ]; then echo "TOO_LARGE"; exit 0; fi; cat "$f"', "sh", root.configPath]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var t = text || ""
+        if (t === "SYMLINK" || t === "NOT_FILE" || t === "TOO_LARGE") {
+          root.errorText = "bindings.lua is invalid, a symlink, or too large."
+          root.fileContent = ""
+        } else {
+          root.fileContent = t
+        }
+        root.onFileRead()
+      }
+    }
+  }
+
+  // SECURITY FIX: Safe atomic writer
+  Process {
+    id: writerProc
+    property string textToWrite: ""
+    command: ["sh", "-c", 'printf "%s" "$1" > "$2.tmp" && mv "$2.tmp" "$2"', "sh", writerProc.textToWrite, root.configPath]
+    onExited: {
+      if (exitCode === 0) {
+        root.noteSaved()
+      } else {
+        root.noteSaveFailed()
+      }
+    }
+  }
+
+  // SECURITY FIX: Safe watcher (Polls mtime instead of reading via FileView)
+  Timer {
+    id: watchTimer
+    interval: 2000
+    running: root.opened
+    repeat: true
+    onTriggered: {
+      checkModProc.running = true
+    }
+  }
+
+  Process {
+    id: checkModProc
+    command: ["stat", "-c", "%Y", root.configPath]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var newMod = String(text || "").trim()
+        if (newMod !== "" && newMod !== root.lastModTime) {
+          root.lastModTime = newMod
+          if (!root.selfWrite) {
+            safeReaderProc.running = true
+          }
+        }
+      }
+    }
+  }
+
   Timer {
     id: statusClear
     interval: 2500
@@ -574,25 +635,13 @@ Item {
     onTriggered: root.errorText = ""
   }
 
-  FileView {
-    id: configFile
-    path: root.configPath
-    atomicWrites: true; printErrors: false; watchChanges: true
-    onLoaded: { root.loadDisabledBindings(); root.scanBindings() }
-    onLoadFailed: {}
-    onSaved: root.noteSaved()
-    onSaveFailed: root.noteSaveFailed()
-    onFileChanged: { if (!root.selfWrite) reload() }
-  }
-
   Timer {
     id: startupTimer
     interval: 100
     running: true
     repeat: false
     onTriggered: {
-      scanBindings()
-      loadDisabledBindings()
+      safeReaderProc.running = true
     }
   }
 
@@ -609,7 +658,6 @@ Item {
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
 
-    // Scrim (click to dismiss) — also captures Escape
     Rectangle {
       anchors.fill: parent
       color: root.scrim
@@ -620,7 +668,6 @@ Item {
       }
     }
 
-    // Main card
     BorderSurface {
       id: card
       anchors.centerIn: parent
@@ -633,7 +680,6 @@ Item {
 
       MouseArea { anchors.fill: parent; onClicked: {} }
 
-      // ---- MAIN CONTENT LAYOUT
       ColumnLayout {
         anchors.fill: parent
         anchors.topMargin: card.contentTopInset + Style.spacing.sm
@@ -642,7 +688,6 @@ Item {
         anchors.leftMargin: card.contentLeftInset + Style.spacing.md
         spacing: Style.spacing.panelGap
 
-        // Header
         Item {
           Layout.fillWidth: true
           Layout.preferredHeight: Math.max(headerTitle.implicitHeight, headerActions.implicitHeight)
@@ -695,7 +740,6 @@ Item {
 
         PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
 
-        // Search & filter bar
         RowLayout {
           Layout.fillWidth: true
           spacing: Style.spacing.sm
@@ -721,7 +765,6 @@ Item {
           }
         }
 
-        // Binding list
         ListView {
           id: bindList
           Layout.fillWidth: true
@@ -759,7 +802,6 @@ Item {
               anchors.margins: Style.spacing.rowPaddingX
               spacing: Style.spacing.md
 
-              // Key combo column
               Column {
                 Layout.preferredWidth: Style.space(190)
                 spacing: 3
@@ -790,7 +832,6 @@ Item {
                 }
               }
 
-              // Description column
               Column {
                 Layout.preferredWidth: Style.space(160)
                 Layout.fillWidth: true
@@ -813,7 +854,6 @@ Item {
                 }
               }
 
-              // Command column
               Text {
                 Layout.fillWidth: true
                 Layout.minimumWidth: Style.space(140)
@@ -827,10 +867,8 @@ Item {
                 wrapMode: Text.WordWrap
               }
 
-              // Spacer to push action buttons right
               Item { Layout.fillWidth: true; Layout.maximumWidth: Style.space(8) }
 
-              // Action buttons
               Row {
                 spacing: Style.spacing.xs
                 PanelActionButton {
@@ -848,7 +886,6 @@ Item {
               }
             }
 
-            // Hover detection
             MouseArea {
               id: mouseHover
               anchors.fill: parent
@@ -858,7 +895,6 @@ Item {
             }
           }
 
-          // Empty state
           Rectangle {
             anchors.centerIn: parent
             visible: bindList.count === 0
@@ -875,7 +911,6 @@ Item {
           }
         }
 
-        // Footer
         Item {
           Layout.fillWidth: true
           Layout.preferredHeight: Math.max(footerBtn.implicitHeight, disabledBtn.implicitHeight, footerHint.implicitHeight) + Style.spacing.md
@@ -937,7 +972,6 @@ Item {
       }
     }
 
-    // ---- add / edit binding dialog (REDESIGNED)
     Rectangle {
       id: addDialog
       visible: false
@@ -966,7 +1000,6 @@ Item {
           anchors.leftMargin: addDialogSurface.contentLeftInset
           spacing: 0
 
-          // ── Title bar ──────────────────────────────────────────
           RowLayout {
             Layout.fillWidth: true
             Layout.bottomMargin: Style.spacing.md
@@ -999,7 +1032,6 @@ Item {
 
           PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.bottomMargin: Style.spacing.sm }
 
-          // ── Scrollable form body ───────────────────────────────
           ScrollView {
             id: addDialogScroll
             Layout.fillWidth: true
@@ -1012,7 +1044,6 @@ Item {
               width: addDialogScroll.width - Style.space(8)
               spacing: Style.spacing.lg
 
-              // ── Step 1 · Modifiers ───────────────────────────
               ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.spacing.sm
@@ -1105,7 +1136,6 @@ Item {
 
               PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
 
-              // ── Step 2 · Key Count ───────────────────────────
               ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.spacing.sm
@@ -1188,7 +1218,6 @@ Item {
 
               PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
 
-              // ── Step 3 · Key Selectors (UX FIX: Searchable Dropdown) ───────────────────────
               ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.spacing.sm
@@ -1227,7 +1256,6 @@ Item {
                       Layout.preferredWidth: Style.space(42)
                     }
 
-                    // Searchable Dropdown Implementation
                     Item {
                       id: keySelector
                       Layout.fillWidth: true
@@ -1313,12 +1341,12 @@ Item {
                         }
                       }
 
-                      // Popup reparented to addDialog to prevent ScrollView clipping
+                      // FIX 1: Constrained Popup Size
                       Popup {
                         id: keyPopup
                         parent: addDialog
-                        width: keySelector.width
-                        height: Math.min(Style.space(200), keyListView.contentHeight + Style.space(16))
+                        width: Math.min(Style.space(260), keySelector.width)
+                        height: Math.min(Style.space(200), keyListView.contentHeight + Style.space(8))
                         
                         property point globalPos: keySelector.mapToItem(addDialog, 0, 0)
                         x: globalPos.x
@@ -1405,13 +1433,12 @@ Item {
                             out.push(root.allKeys[i])
                           }
                         }
-                        return out.slice(0, 100) // Limit to 100 to avoid lag
+                        return out.slice(0, 100)
                       }
                     }
                   }
                 }
 
-                // Key combo preview (prominent)
                 Rectangle {
                   Layout.fillWidth: true
                   Layout.topMargin: Style.spacing.xs
@@ -1446,7 +1473,6 @@ Item {
 
               PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
 
-              // ── Step 4 · Description ─────────────────────────
               ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.spacing.sm
@@ -1476,13 +1502,12 @@ Item {
                   foreground: root.foreground
                   accent: root.accent
                   font.family: root.fontFamily
-                  maximumLength: 200 // Cap field size
+                  maximumLength: 200
                 }
               }
 
               PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
 
-              // ── Step 5 · Action Type ─────────────────────────
               ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.spacing.sm
@@ -1558,7 +1583,6 @@ Item {
 
               PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
 
-              // ── Step 6 · Action Details ──────────────────────
               ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.spacing.sm
@@ -1581,7 +1605,6 @@ Item {
                   }
                 }
 
-                // Action 0: Command — shared with Lua/Dsp (idx 2) and Web App (idx 3)
                 ColumnLayout {
                   Layout.fillWidth: true
                   visible: root.selectedActionIndex === 0 || root.selectedActionIndex === 2 || root.selectedActionIndex === 3
@@ -1612,11 +1635,10 @@ Item {
                     foreground: root.foreground
                     accent: root.accent
                     font.family: root.fontFamily
-                    maximumLength: 1000 // Cap field size
+                    maximumLength: 1000
                   }
                 }
 
-                // Action 1: Kill Active Window
                 Rectangle {
                   Layout.fillWidth: true
                   visible: root.selectedActionIndex === 1
@@ -1648,7 +1670,6 @@ Item {
                   }
                 }
 
-                // Action 4: Unbind
                 Rectangle {
                   Layout.fillWidth: true
                   visible: root.selectedActionIndex === 4
@@ -1679,11 +1700,10 @@ Item {
                     }
                   }
                 }
-              } // ← close Step 6 ColumnLayout
-            } // ← close ScrollView inner ColumnLayout
-          } // ← close ScrollView
+              } 
+            } 
+          } 
 
-          // ── Footer: Cancel / Save ────────────────────────────
           PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.topMargin: Style.spacing.sm }
 
           RowLayout {
@@ -1703,7 +1723,6 @@ Item {
 
             Item { Layout.fillWidth: true; visible: root.errorText === "" }
 
-            // Cancel — ghost style
             Rectangle {
               id: cancelBtn
               width: cancelBtnLabel.implicitWidth + Style.space(28)
@@ -1733,7 +1752,6 @@ Item {
               }
             }
 
-            // Save — accent-filled primary
             Rectangle {
               id: saveBtn
               width: saveBtnLabel.implicitWidth + Style.space(32)
@@ -1766,7 +1784,6 @@ Item {
       }
     }
 
-    // ---- disabled keybindings dialog overlay (REDESIGNED)
     Rectangle {
       id: disabledDialog
       visible: false
@@ -1793,7 +1810,6 @@ Item {
           anchors.leftMargin: disabledDialogSurface.contentLeftInset
           spacing: 0
 
-          // ── Title bar ──────────────────────────────────────────
           RowLayout {
             Layout.fillWidth: true
             Layout.bottomMargin: Style.spacing.md
@@ -1826,7 +1842,6 @@ Item {
 
           PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.bottomMargin: Style.spacing.sm }
 
-          // ── Description ────────────────────────────────────────
           Rectangle {
             Layout.fillWidth: true
             Layout.bottomMargin: Style.spacing.md
@@ -1860,7 +1875,6 @@ Item {
             }
           }
 
-          // ── Scrollable list of disabled bindings ───────────────
           ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -1939,7 +1953,6 @@ Item {
                       }
                     }
 
-                    // Re-enable button (accent-filled primary style)
                     Rectangle {
                       id: reEnableBtn
                       width: reEnableBtnLabel.implicitWidth + Style.space(24)
@@ -1981,7 +1994,6 @@ Item {
                   }
                 }
 
-                // Empty state
                 Rectangle {
                   anchors.centerIn: parent
                   visible: disabledListView.count === 0
@@ -2000,7 +2012,6 @@ Item {
             }
           }
 
-          // ── Footer ─────────────────────────────────────────────
           PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.topMargin: Style.spacing.sm }
 
           RowLayout {
@@ -2017,7 +2028,6 @@ Item {
               elide: Text.ElideRight
             }
 
-            // Close — ghost style
             Rectangle {
               id: disabledCloseBtn
               width: disabledCloseLabel.implicitWidth + Style.space(28)
@@ -2051,75 +2061,214 @@ Item {
       }
     }
 
-    // ---- conflict dialog overlay
+    // FIX 2: Redesigned conflict dialog overlay
     Rectangle {
       id: conflictDialog
       visible: root.showConflictDialog
       anchors.fill: parent
-      color: Qt.rgba(0,0,0,0.5)
+      color: Qt.rgba(0, 0, 0, 0.55)
       z: 200
       MouseArea { anchors.fill: parent; onClicked: {} }
 
       BorderSurface {
+        id: conflictDialogSurface
         anchors.centerIn: parent
-        width: Math.min(Style.space(420), parent.width - Style.gapsOut * 4)
-        height: Math.min(Style.space(240), parent.height - Style.gapsOut * 4)
+        width: Math.min(Style.space(480), parent.width - Style.gapsOut * 4)
+        height: Math.min(Style.space(320), parent.height - Style.gapsOut * 4)
         radius: Style.cornerRadius
-        color: root.background
-        borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
-        padding: Style.spacing.panelPadding
+        color: Color.popups.background
+        borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
+        padding: Style.spacing.popupPadding
 
         ColumnLayout {
           anchors.fill: parent
-          spacing: Style.spacing.panelGap
+          anchors.topMargin: conflictDialogSurface.contentTopInset
+          anchors.rightMargin: conflictDialogSurface.contentRightInset
+          anchors.bottomMargin: conflictDialogSurface.contentBottomInset
+          anchors.leftMargin: conflictDialogSurface.contentLeftInset
+          spacing: 0
 
-          Text {
-            text: "Key Conflict"
-            font.pixelSize: Style.font.heading
-            font.bold: true
-            color: root.urgent
-            Layout.alignment: Qt.AlignHCenter
+          RowLayout {
+            Layout.fillWidth: true
+            Layout.bottomMargin: Style.spacing.md
+            spacing: Style.spacing.sm
+
+            Rectangle {
+              width: Style.space(6)
+              height: conflictDialogTitle.implicitHeight
+              radius: Style.space(3)
+              color: root.urgent
+            }
+
+            Text {
+              id: conflictDialogTitle
+              text: "⚠ Key Conflict Detected"
+              font.pixelSize: Style.font.heading
+              font.bold: true
+              font.family: root.fontFamily
+              color: root.urgent
+              Layout.fillWidth: true
+            }
+
+            PanelActionButton {
+              iconText: "X"
+              tooltipText: "Close"
+              foreground: root.foreground
+              onClicked: { root.showConflictDialog = false; root.pendingNewBind = null }
+            }
           }
-          Text {
-            text: "This key combination is already used by another custom binding. Override it?"
-            textFormat: Text.PlainText
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            wrapMode: Text.WordWrap
+
+          PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.bottomMargin: Style.spacing.sm }
+
+          Rectangle {
+            Layout.fillWidth: true
+            Layout.bottomMargin: Style.spacing.md
+            height: Style.space(64)
+            radius: Style.cornerRadius
+            color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.06)
+            border.width: 1
+            border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.2)
+
+            RowLayout {
+              anchors.fill: parent
+              anchors.leftMargin: Style.spacing.md
+              anchors.rightMargin: Style.spacing.md
+              spacing: Style.spacing.sm
+
+              Text {
+                text: "⚠"
+                font.pixelSize: Style.font.subtitle
+                color: root.urgent
+              }
+              Text {
+                Layout.fillWidth: true
+                text: "This key combination is already used by another custom binding. Overriding it will replace the existing binding."
+                color: Qt.darker(root.foreground, 1.4)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
           }
-          Text {
-            text: "Existing: " + (root.conflictBindings.length > 0 ? root.conflictBindings[0].desc : "unknown")
-            textFormat: Text.PlainText
-            color: Qt.darker(root.foreground, 1.5)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
+
+          ColumnLayout {
+            Layout.fillWidth: true
+            Layout.bottomMargin: Style.spacing.md
+            spacing: Style.spacing.xxs
+
+            Text {
+              text: "Existing Binding:"
+              color: Qt.darker(root.foreground, 1.5)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+            
+            Rectangle {
+              Layout.fillWidth: true
+              height: Style.space(40)
+              radius: Style.cornerRadius
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+              border.width: 1
+              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.15)
+              
+              RowLayout {
+                anchors.fill: parent
+                anchors.margins: Style.spacing.sm
+                spacing: Style.spacing.sm
+                
+                Text {
+                  text: root.conflictBindings.length > 0 ? root.conflictBindings[0].keys : "Unknown"
+                  color: root.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+                
+                Text {
+                  Layout.fillWidth: true
+                  text: root.conflictBindings.length > 0 ? root.conflictBindings[0].desc : "Unknown"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  elide: Text.ElideRight
+                }
+              }
+            }
           }
+
+          Item { Layout.fillHeight: true }
+
+          PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.topMargin: Style.spacing.sm }
+
           RowLayout {
             Layout.fillWidth: true
             Layout.topMargin: Style.spacing.md
+            spacing: Style.spacing.sm
+
             Item { Layout.fillWidth: true }
-            Button {
-              text: "Cancel"
-              foreground: root.foreground
-              accent: root.accent
-              fontFamily: root.fontFamily
-              onClicked: { root.showConflictDialog = false; root.pendingNewBind = null }
+
+            Rectangle {
+              id: conflictCancelBtn
+              width: conflictCancelLabel.implicitWidth + Style.space(28)
+              height: Style.space(36)
+              radius: Style.cornerRadius
+              color: conflictCancelHover.containsMouse
+                ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                : "transparent"
+              border.width: 1
+              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
+
+              Text {
+                id: conflictCancelLabel
+                anchors.centerIn: parent
+                text: "Cancel"
+                color: Qt.darker(root.foreground, 1.3)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              MouseArea {
+                id: conflictCancelHover
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: { root.showConflictDialog = false; root.pendingNewBind = null }
+              }
             }
-            Button {
-              text: "Override"
-              foreground: root.foreground
-              accent: root.urgent
-              fontFamily: root.fontFamily
-              onClicked: root.confirmConflictOverride()
+
+            Rectangle {
+              id: conflictOverrideBtn
+              width: conflictOverrideLabel.implicitWidth + Style.space(32)
+              height: Style.space(36)
+              radius: Style.cornerRadius
+              color: conflictOverrideHover.containsMouse
+                ? Qt.lighter(root.urgent, 1.15)
+                : root.urgent
+
+              Text {
+                id: conflictOverrideLabel
+                anchors.centerIn: parent
+                text: "Override"
+                color: root.background
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+
+              MouseArea {
+                id: conflictOverrideHover
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.confirmConflictOverride()
+              }
             }
           }
         }
       }
     }
 
-        // ---- help dialog overlay
     Rectangle {
       id: helpDialog
       visible: false
@@ -2146,7 +2295,6 @@ Item {
           anchors.leftMargin: helpDialogSurface.contentLeftInset
           spacing: 0
 
-          // ── Title bar ──────────────────────────────────────────
           RowLayout {
             Layout.fillWidth: true
             Layout.bottomMargin: Style.spacing.md
@@ -2179,7 +2327,6 @@ Item {
 
           PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.bottomMargin: Style.spacing.sm }
 
-          // ── Scrollable content ───────────────────────────────
           ScrollView {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -2191,7 +2338,6 @@ Item {
               width: parent.width
               spacing: Style.spacing.md
 
-              // Overview
               ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.spacing.xs
@@ -2227,7 +2373,6 @@ Item {
 
               PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
 
-              // Finding installed programs
               ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.spacing.xs
@@ -2259,7 +2404,6 @@ Item {
                   wrapMode: Text.WordWrap
                 }
 
-                // Command examples - FIXED: proper ColumnLayout with wrapMode
                 Rectangle {
                   Layout.fillWidth: true
                   Layout.preferredHeight: cmdList.implicitHeight + Style.space(16)
@@ -2356,7 +2500,6 @@ Item {
 
               PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
 
-              // Keybindings syntax
               ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.spacing.xs
@@ -2391,7 +2534,6 @@ Item {
 
               PanelSeparator { foreground: root.foreground; Layout.fillWidth: true }
 
-              // Tips
               ColumnLayout {
                 Layout.fillWidth: true
                 spacing: Style.spacing.xs
@@ -2426,7 +2568,6 @@ Item {
             }
           }
 
-          // ── Footer ─────────────────────────────────────────────
           PanelSeparator { foreground: root.foreground; Layout.fillWidth: true; Layout.topMargin: Style.spacing.sm }
 
           RowLayout {
@@ -2436,7 +2577,6 @@ Item {
 
             Item { Layout.fillWidth: true }
 
-            // Close — ghost style
             Rectangle {
               id: helpCloseBtn
               width: helpCloseLabel.implicitWidth + Style.space(28)

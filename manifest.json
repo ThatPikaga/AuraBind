@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "thatpikaga.aurabind",
   "name": "AuraBind",
-  "version": "5.0.1",
+  "version": "5.0.2",
   "author": "ThatPikaga",
   "license": "MIT",
   "description": "A dedicated application to manage Hyprland keybindings with desktop shortcuts, and auto-registration.",
