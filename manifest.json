@@ -5,7 +5,7 @@
   "version": "5.0.1",
   "author": "ThatPikaga",
   "license": "MIT",
-  "description": "A dedicated panel to manage Hyprland keybindings with live preview, desktop shortcuts, and auto-registration.",
+  "description": "A dedicated application to manage Hyprland keybindings with desktop shortcuts, and auto-registration.",
   "kinds": ["panel", "service"],
   "entryPoints": {
     "panel": "Panel.qml",

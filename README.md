@@ -6,6 +6,25 @@ An application for managing Hyprland keybindings on the fly with a robust search
 
 Supports full key combinations (SUPER, CTRL, ALT, SHIFT + any key), a searchable binding list, and write-through to your `~/.config/hypr/bindings.lua` file using a managed fence block that coexists with hand-edited content.
 
+
+
+## Previews
+ >*App appearance updates in accordance with your applied system theme*
+
+*Default screen showing the searchable binding list and action toolbar.*
+![Default Screen — main binding list](screenshots/preview.png)
+
+*Example: searching for existing bindings with "terminal"*
+![Default Screen — example search](screenshots/preview4.png)
+
+*Edit binding panel with key assigning, description field, and action type selector.*
+![Edit New Binding Screen](screenshots/preview2.png)
+
+*View showing disabled keybindings in the list.*
+![Disabled Keybindings](screenshots/preview3.png)
+
+
+
 ## Features
 
 - **Searchable key selector** — easily find and bind any standard, media, or mouse key via a searchable dropdown, completely avoiding Wayland global key interception issues.
@@ -92,17 +111,3 @@ Tap the Disable (⊘) or Delete (✕) button, or highlight a row and press Delet
 ## Compatibility
 
 Built for Hyprland. Requires `hyprctl` on your PATH.
-
-## Previews
-
-![Default Screen — main binding list](screenshots/preview.png)
-
-*Default screen showing the searchable binding list and action toolbar.*
-
-![Add New Binding Screen](screenshots/preview2.png)
-
-*The Add/Edit binding panel with key assigning, description field, and action type selector.*
-
-![Disabled Keybindings](screenshots/preview3.png)
-
-*View showing disabled keybindings in the list.*
