@@ -32,6 +32,12 @@ Item {
   // Security: Safe file reading properties
   property string fileContent: ""
   property string lastModTime: ""
+  // SECURITY FIX: tracks whether the last read of bindings.lua actually
+  // succeeded. A rejected read (symlink/oversized/missing) used to leave
+  // fileContent as "", which saveConfig() would treat as a legitimately
+  // empty file — silently clobbering real content the app never saw.
+  // saveConfig() now refuses to run unless this is true.
+  property bool fileReadOk: false
 
   // ---- UI state
   property string errorText: ""
@@ -183,7 +189,19 @@ Item {
   // ------------------------------------------------------- scan bindings
   function scanBindings() {
     var oPath = root.omarchyPath || "/usr/share/omarchy"
-    defaultsScannerProc.command = ["find", oPath + "/default/hypr/bindings", "-maxdepth", "1", "-name", "*.lua", "-type", "f", "-exec", "cat", "{}", "+"]
+    var dir = oPath + "/default/hypr/bindings"
+    // SECURITY FIX: the old command handed cat's entire, unbounded output to
+    // a waitForEnd StdioCollector, which buffers everything in memory before
+    // the 1MB cap was ever applied — an oversized or maliciously large
+    // default-bindings directory (e.g. via a tampered OMARCHY_PATH) could
+    // exhaust memory before truncation kicked in. head -c now caps the
+    // stream itself as it's produced, and timeout bounds wall-clock time.
+    // `dir` is passed as a separate argv element (never interpolated into
+    // the script string), so it can't be used for shell injection.
+    defaultsScannerProc.command = ["timeout", "5", "sh", "-c",
+      'find "$1" -maxdepth 1 -name "*.lua" -type f -print0 2>/dev/null | ' +
+      'xargs -0 -r cat -- 2>/dev/null | head -c 1048576',
+      "sh", dir]
     defaultsScannerProc.running = true
   }
 
@@ -200,19 +218,18 @@ Item {
     var outsideBindings = LuaConfig.parseLuaSourceForBindings(beforeBlock, "custom-outside")
     var allParsed = defaults.slice()
     var combinedUserBindings = LuaConfig.parseManagedBlock(managedLines.join("\n"))
-    
-    for (var i = 0; i < outsideBindings.length; i++) {
-      var ob = outsideBindings[i]
-      if (ob.type === "unbind") {
-        var found = false
-        for (var j = 0; j < combinedUserBindings.length; j++) {
-          if (combinedUserBindings[j].type === "unbind" && combinedUserBindings[j].keys === ob.keys) {
-            found = true; break
-          }
-        }
-        if (!found) combinedUserBindings.push(ob)
-      }
-    }
+
+    // BUG FIX: this used to also push unbind-type outsideBindings (hl.unbind()
+    // calls that live outside AuraBind's managed block, e.g. added by hand or
+    // by something else before AuraBind was installed) into
+    // combinedUserBindings. That list becomes root.userBindings, which is
+    // exactly what saveConfig() re-renders into the managed block on every
+    // save. Since AuraBind never touches text outside its own fences, the
+    // outside line was never removed — so every save produced a second,
+    // duplicate hl.unbind("...") line inside the block. Outside bindings are
+    // now treated as read-only/display-only here, matching how outside
+    // o.bind() calls already work below: shown in the list, never adopted
+    // for writing.
 
     var result = LuaConfig.mergeBindings(allParsed, managedLines)
     for (var k = 0; k < outsideBindings.length; k++) {
@@ -272,6 +289,14 @@ Item {
   }
 
   function saveConfig() {
+    // SECURITY FIX: never write on top of a rejected/failed read. Without
+    // this, a symlinked or oversized bindings.lua would read as "" and any
+    // subsequent save would overwrite the real file with just the newly
+    // rendered managed block, discarding content the app never actually saw.
+    if (!root.fileReadOk) {
+      root.errorText = "Can't save: bindings.lua couldn't be safely read. Close and reopen the panel to retry."
+      return
+    }
     var body = renderManagedBody()
     var current = root.fileContent
     var next = LuaConfig.applyBlock(current, body)
@@ -560,10 +585,24 @@ Item {
     }
   }
 
-  // SECURITY FIX: Bounded, no-follow regular file reader
+  // SECURITY FIX: Race-free reader. Opens the path exactly once and performs
+  // every subsequent check (type, size, symlink-detection) against that same
+  // open file description via /proc/self/fd, not against the mutable path.
+  // This closes the check-then-open window a swapped FIFO or oversized file
+  // could previously exploit. head -c enforces the size cap on the stream
+  // itself (not just on the stat'd size), and timeout bounds wall-clock time
+  // in case the opened file blocks (e.g. a slow/broken filesystem).
   Process {
     id: safeReaderProc
-    command: ["sh", "-c", 'f="$1"; if [ -L "$f" ]; then echo "SYMLINK"; exit 0; fi; if [ ! -f "$f" ]; then echo "NOT_FILE"; exit 0; fi; size=$(stat -c %s "$f" 2>/dev/null || echo 0); if [ "$size" -gt 5000000 ]; then echo "TOO_LARGE"; exit 0; fi; cat "$f"', "sh", root.configPath]
+    command: ["timeout", "5", "sh", "-c",
+      'f="$1"; exec 3<"$f" 2>/dev/null || { echo NOT_FILE; exit 0; }; ' +
+      'real=$(readlink -f "/proc/self/fd/3" 2>/dev/null); ' +
+      'if [ "$real" != "$f" ]; then echo SYMLINK; exit 0; fi; ' +
+      'if [ ! -f "/proc/self/fd/3" ]; then echo NOT_FILE; exit 0; fi; ' +
+      'size=$(stat -L -c %s "/proc/self/fd/3" 2>/dev/null || echo 0); ' +
+      'if [ "$size" -gt 1048576 ]; then echo TOO_LARGE; exit 0; fi; ' +
+      'head -c 1048576 <&3',
+      "sh", root.configPath]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -571,19 +610,34 @@ Item {
         if (t === "SYMLINK" || t === "NOT_FILE" || t === "TOO_LARGE") {
           root.errorText = "bindings.lua is invalid, a symlink, or too large."
           root.fileContent = ""
+          root.fileReadOk = false
         } else {
           root.fileContent = t
+          root.fileReadOk = true
         }
         root.onFileRead()
       }
     }
   }
 
-  // SECURITY FIX: Safe atomic writer
+  // SECURITY FIX: Safe atomic writer. The old predictable "bindings.lua.tmp"
+  // name meant a symlink planted at that path in advance would be followed
+  // by the `>` redirection before the rename ever ran. mktemp creates the
+  // temp file itself with O_CREAT|O_EXCL under an unpredictable name, so
+  // there's nothing for an attacker to pre-plant a symlink at. The final
+  // `mv` uses rename() semantics, which replaces whatever is at the
+  // destination path (including a symlink entry itself) rather than
+  // following it, so the destination is never written-through either.
   Process {
     id: writerProc
     property string textToWrite: ""
-    command: ["sh", "-c", 'printf "%s" "$1" > "$2.tmp" && mv "$2.tmp" "$2"', "sh", writerProc.textToWrite, root.configPath]
+    command: ["sh", "-c",
+      'f="$2"; dir="${f%/*}"; ' +
+      'mkdir -p "$dir" || exit 1; ' +
+      'tmp=$(mktemp "$dir/.aurabind-bindings.XXXXXX") || exit 1; ' +
+      'printf "%s" "$1" > "$tmp" || { rm -f "$tmp"; exit 1; }; ' +
+      'mv -f "$tmp" "$f"',
+      "sh", writerProc.textToWrite, root.configPath]
     onExited: {
       if (exitCode === 0) {
         root.noteSaved()
@@ -2183,6 +2237,12 @@ Item {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                   font.bold: true
+                  // SECURITY FIX: this string comes from parsed config
+                  // content. Default textFormat (AutoText) auto-detects and
+                  // renders a subset of HTML, so a crafted key/desc field
+                  // (e.g. containing <img src="...">) could trigger loading
+                  // of a local or remote resource just by being displayed.
+                  textFormat: Text.PlainText
                 }
                 
                 Text {
@@ -2192,6 +2252,7 @@ Item {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                   elide: Text.ElideRight
+                  textFormat: Text.PlainText
                 }
               }
             }
